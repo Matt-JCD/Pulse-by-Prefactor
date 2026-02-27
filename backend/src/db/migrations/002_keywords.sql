@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS keywords (
+  id         SERIAL PRIMARY KEY,
+  keyword    TEXT NOT NULL UNIQUE,
+  active     BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
