@@ -104,27 +104,20 @@ router.post('/api/intelligence/trigger-run', async (req, res) => {
 
   res.json({ status: 'started', platform: platform || 'all' });
 
-  // Run collectors in the background (don't block the response)
-  try {
-    if (!platform || platform === 'hackernews') {
-      console.log('[trigger] Starting HN collector...');
-      await hnCollector();
+  // Each collector runs in its own try/catch so one failure never blocks the rest.
+  const tryRun = async (name: string, fn: () => Promise<unknown>) => {
+    try {
+      console.log(`[trigger] Starting ${name}...`);
+      await fn();
+    } catch (err) {
+      console.error(`[trigger] ${name} failed:`, err instanceof Error ? err.message : err);
     }
-    if (!platform || platform === 'reddit') {
-      console.log('[trigger] Starting Reddit collector...');
-      await redditCollector();
-    }
-    if (!platform || platform === 'twitter') {
-      console.log('[trigger] Starting Twitter collector...');
-      await twitterCollector();
-    }
-    if (!platform || platform === 'synthesizer') {
-      console.log('[trigger] Starting synthesizer...');
-      await synthesizer();
-    }
-  } catch (err) {
-    console.error('[trigger] Collector error:', err);
-  }
+  };
+
+  if (!platform || platform === 'hackernews') await tryRun('hn-collector', hnCollector);
+  if (!platform || platform === 'reddit')      await tryRun('reddit-collector', redditCollector);
+  if (!platform || platform === 'twitter')     await tryRun('twitter-collector', twitterCollector);
+  if (!platform || platform === 'synthesizer') await tryRun('synthesizer', synthesizer);
 });
 
 export default router;

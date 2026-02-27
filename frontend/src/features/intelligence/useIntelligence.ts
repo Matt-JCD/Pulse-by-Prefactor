@@ -16,12 +16,15 @@ interface RunLogEntry {
   status: string;
 }
 
-async function fetchLatestRunId(): Promise<number | null> {
+// Returns the most recent synthesizer run_log id (null if none yet).
+// We wait for this specifically because synthesizer is always the LAST step —
+// detecting it means the full pipeline (collectors + synthesis) has completed.
+async function fetchLatestSynthesizerId(): Promise<number | null> {
   try {
     const res = await fetch(`${API_URL}/api/intelligence/run-log`);
     if (!res.ok) return null;
     const data: RunLogEntry[] = await res.json();
-    return data[0]?.id ?? null;
+    return data.find((r) => r.function_name === 'synthesizer')?.id ?? null;
   } catch {
     return null;
   }
@@ -38,8 +41,8 @@ export function useIntelligence() {
     setRunError(null);
 
     try {
-      // Snapshot the current latest run ID so we know when a new one appears
-      const baselineId = await fetchLatestRunId();
+      // Snapshot the current synthesizer run id so we know when a NEW one appears
+      const baselineSynthId = await fetchLatestSynthesizerId();
 
       // Trigger — send NO platform value so backend runs everything (!platform = true)
       const res = await fetch(`${API_URL}/api/intelligence/trigger-run`, {
@@ -49,15 +52,16 @@ export function useIntelligence() {
       });
       if (!res.ok) throw new Error(`Trigger failed: ${res.status}`);
 
-      // Poll until a new run_log entry appears (meaning at least one agent finished)
+      // Poll until a new synthesizer entry appears — that means the full
+      // pipeline (collectors → synthesizer) has finished (success or error).
       let polls = 0;
       const poll = async (): Promise<void> => {
         polls++;
         setPollCount(polls);
-        const latestId = await fetchLatestRunId();
+        const latestSynthId = await fetchLatestSynthesizerId();
 
-        if (latestId !== null && latestId !== baselineId) {
-          // New entry — data has changed, refresh server-rendered page
+        if (latestSynthId !== null && latestSynthId !== baselineSynthId) {
+          // Synthesizer completed — refresh page with fresh data
           router.refresh();
           setIsRunning(false);
           setPollCount(0);
