@@ -93,7 +93,7 @@ If you cannot find a specific thing from the content, do not create a topic.
 
 summary: Describe what people are actually saying about this specific thing. Include any concrete details from the posts — version numbers, company names, specific features, error messages, outcomes people reported, opinions expressed. No generalisations. 2 sentences maximum.
 
-Return JSON only:
+Return JSON only. Maximum 8 emerging_topics total.
 {
   "keyword_signals": [
     {"keyword": "string", "post_count": number, "sentiment": "positive|neutral|negative|mixed"}
@@ -111,7 +111,7 @@ Return JSON only:
 
   const response = await client.messages.create({
     model: config.model,
-    max_tokens: 4096,
+    max_tokens: 8192,
     messages: [{ role: 'user', content: prompt }],
   });
 

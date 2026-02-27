@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -32,8 +32,26 @@ export function useIntelligence() {
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [pollCount, setPollCount] = useState(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+
+  const clearPollTimer = () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      clearPollTimer();
+    };
+  }, []);
 
   async function handleRunNow() {
+    clearPollTimer();
     setIsRunning(true);
     setRunError(null);
 
@@ -66,29 +84,38 @@ export function useIntelligence() {
           const failed = newEntries.filter((r) => r.status === 'error');
           if (failed.length > 0) {
             const names = failed.map((r) => r.function_name).join(', ');
-            setRunError(`Run failed: ${names} — check the backend terminal.`);
+            if (mountedRef.current) {
+              setRunError(`Run failed: ${names} — check the backend terminal.`);
+            }
           }
           // Always refresh so whatever data was collected is visible
           router.refresh();
-          setIsRunning(false);
-          setPollCount(0);
+          if (mountedRef.current) {
+            setIsRunning(false);
+            setPollCount(0);
+          }
           return;
         }
 
         if (polls >= MAX_POLLS) {
-          setRunError('Run timed out — check the backend logs.');
-          setIsRunning(false);
-          setPollCount(0);
+          if (mountedRef.current) {
+            setRunError('Run timed out — check the backend logs.');
+            setIsRunning(false);
+            setPollCount(0);
+          }
           return;
         }
 
-        setTimeout(poll, POLL_INTERVAL_MS);
+        timeoutRef.current = setTimeout(poll, POLL_INTERVAL_MS);
       };
 
-      setTimeout(poll, POLL_INTERVAL_MS);
+      timeoutRef.current = setTimeout(poll, POLL_INTERVAL_MS);
     } catch (err) {
-      setRunError(err instanceof Error ? err.message : 'Run failed');
-      setIsRunning(false);
+      clearPollTimer();
+      if (mountedRef.current) {
+        setRunError(err instanceof Error ? err.message : 'Run failed');
+        setIsRunning(false);
+      }
     }
   }
 

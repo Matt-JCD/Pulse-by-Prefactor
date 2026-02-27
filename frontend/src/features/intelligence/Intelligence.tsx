@@ -1,4 +1,4 @@
-import type { DailyReport, EmergingTopic, KeywordSignal, RunLogEntry } from '@/lib/api';
+import type { DailyReport, EmergingTopic, RunLogEntry } from '@/lib/api';
 import { DashboardHeader } from './components/DashboardHeader';
 import { KeywordTrendGrid } from './components/KeywordTrendGrid';
 import { SynthesisSection } from './components/SynthesisSection';
@@ -7,7 +7,6 @@ import { WordCloudSection } from './components/WordCloudSection';
 
 interface Props {
   report: DailyReport | null;
-  signals: KeywordSignal[];
   topics: EmergingTopic[];   // 14 days — used by both word cloud and trend grid
   runLog: RunLogEntry[];
   todayDate: string; // YYYY-MM-DD in Sydney time
@@ -15,7 +14,6 @@ interface Props {
 
 export function Intelligence({
   report,
-  signals,
   topics,
   runLog,
   todayDate,

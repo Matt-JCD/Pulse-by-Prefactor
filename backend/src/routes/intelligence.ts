@@ -7,6 +7,7 @@ import { synthesizer } from '../agents/synthesizer.js';
 import { getSydneyDate, getSydneyDateOffset } from '../utils/sydneyDate.js';
 
 const router = Router();
+const VALID_PLATFORMS = new Set(['hackernews', 'reddit', 'twitter', 'synthesizer']);
 
 // GET /api/intelligence/today — today's daily_report
 router.get('/api/intelligence/today', async (_req, res) => {
@@ -101,6 +102,12 @@ router.get('/api/intelligence/run-log', async (_req, res) => {
 // POST /api/intelligence/trigger-run — manually trigger collectors
 router.post('/api/intelligence/trigger-run', async (req, res) => {
   const platform = req.body?.platform as string | undefined;
+  if (platform && !VALID_PLATFORMS.has(platform)) {
+    res.status(400).json({
+      error: `Invalid platform "${platform}". Expected one of: hackernews, reddit, twitter, synthesizer.`,
+    });
+    return;
+  }
 
   res.json({ status: 'started', platform: platform || 'all' });
 
