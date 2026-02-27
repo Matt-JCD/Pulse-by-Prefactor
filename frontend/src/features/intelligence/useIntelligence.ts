@@ -14,19 +14,16 @@ interface RunLogEntry {
   created_at: string;
   function_name: string;
   status: string;
+  error_msg: string | null;
 }
 
-// Returns the most recent synthesizer run_log id (null if none yet).
-// We wait for this specifically because synthesizer is always the LAST step —
-// detecting it means the full pipeline (collectors + synthesis) has completed.
-async function fetchLatestSynthesizerId(): Promise<number | null> {
+async function fetchRunLog(): Promise<RunLogEntry[]> {
   try {
     const res = await fetch(`${API_URL}/api/intelligence/run-log`);
-    if (!res.ok) return null;
-    const data: RunLogEntry[] = await res.json();
-    return data.find((r) => r.function_name === 'synthesizer')?.id ?? null;
+    if (!res.ok) return [];
+    return await res.json() as RunLogEntry[];
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -41,8 +38,10 @@ export function useIntelligence() {
     setRunError(null);
 
     try {
-      // Snapshot the current synthesizer run id so we know when a NEW one appears
-      const baselineSynthId = await fetchLatestSynthesizerId();
+      // Snapshot the full run_log before triggering so we can identify new entries afterwards
+      const baselineLog = await fetchRunLog();
+      const baselineIds = new Set(baselineLog.map((r) => r.id));
+      const baselineSynthId = baselineLog.find((r) => r.function_name === 'synthesizer')?.id ?? null;
 
       // Trigger — send NO platform value so backend runs everything (!platform = true)
       const res = await fetch(`${API_URL}/api/intelligence/trigger-run`, {
@@ -58,10 +57,18 @@ export function useIntelligence() {
       const poll = async (): Promise<void> => {
         polls++;
         setPollCount(polls);
-        const latestSynthId = await fetchLatestSynthesizerId();
+        const latestLog = await fetchRunLog();
+        const latestSynthId = latestLog.find((r) => r.function_name === 'synthesizer')?.id ?? null;
 
         if (latestSynthId !== null && latestSynthId !== baselineSynthId) {
-          // Synthesizer completed — refresh page with fresh data
+          // Synthesizer completed — check if any agent in this run failed
+          const newEntries = latestLog.filter((r) => !baselineIds.has(r.id));
+          const failed = newEntries.filter((r) => r.status === 'error');
+          if (failed.length > 0) {
+            const names = failed.map((r) => r.function_name).join(', ');
+            setRunError(`Run failed: ${names} — check the backend terminal.`);
+          }
+          // Always refresh so whatever data was collected is visible
           router.refresh();
           setIsRunning(false);
           setPollCount(0);
