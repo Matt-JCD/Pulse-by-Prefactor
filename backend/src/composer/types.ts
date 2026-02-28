@@ -23,6 +23,7 @@ export interface DraftRequest {
   keywords: string[];
   sourceLinks?: string[];
   platform: Platform;
+  angle?: string;
 }
 
 export interface PlatformResult {

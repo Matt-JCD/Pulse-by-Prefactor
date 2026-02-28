@@ -1,8 +1,20 @@
-export default function ComposerPage() {
+import {
+  fetchQueue,
+  fetchStats,
+  fetchTodayTopics,
+  fetchHistory,
+} from '@/features/composer/Composer.api';
+import { Composer } from '@/features/composer/Composer';
+
+export default async function ComposerPage() {
+  const [posts, stats, topics, history] = await Promise.all([
+    fetchQueue(),
+    fetchStats(),
+    fetchTodayTopics(),
+    fetchHistory(),
+  ]);
+
   return (
-    <div>
-      <h1 className="text-2xl font-semibold tracking-tight">Composer</h1>
-      <p className="mt-2 text-muted text-sm">Draft and refine posts from intelligence recommendations. Coming in Phase 9.</p>
-    </div>
+    <Composer posts={posts} stats={stats} topics={topics} history={history} />
   );
 }

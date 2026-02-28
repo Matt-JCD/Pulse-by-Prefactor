@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { supabase } from '../db/supabase.js';
-import { draftPost } from '../composer/drafting.js';
+import { draftPost, reviseDraft } from '../composer/drafting.js';
+import { publishPost } from '../composer/index.js';
 import { getDailyCount } from '../composer/counter.js';
 import { getSydneyDate } from '../utils/sydneyDate.js';
 import type { ComposerPost, Platform } from '../composer/types.js';
@@ -70,6 +71,27 @@ router.get('/api/composer/stats', async (_req, res) => {
   });
 });
 
+// ─── GET /api/composer/history ─────────────────────────────────────────────
+// Returns today's published, failed, and rejected posts for status tracking.
+router.get('/api/composer/history', async (_req, res) => {
+  const today = getSydneyDate();
+
+  const { data, error } = await supabase
+    .from('posts')
+    .select('*')
+    .in('status', ['published', 'failed', 'rejected'])
+    .gte('created_at', `${today}T00:00:00Z`)
+    .order('updated_at', { ascending: false })
+    .limit(20);
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+
+  res.json(data);
+});
+
 // ─── PATCH /api/composer/:id/approve ────────────────────────────────────────
 // Approves a draft — sets status to 'scheduled'.
 // The composer scheduler will publish it when scheduled_at arrives.
@@ -90,6 +112,42 @@ router.patch('/api/composer/:id/approve', async (req, res) => {
   }
 
   res.json(data);
+});
+
+// ─── PATCH /api/composer/:id/publish ─────────────────────────────────────────
+// Immediately publishes a scheduled post through its platform adapter.
+router.patch('/api/composer/:id/publish', async (req, res) => {
+  const { id } = req.params;
+
+  // 1. Load the post — must be in 'scheduled' status
+  const { data: post, error: loadErr } = await supabase
+    .from('posts')
+    .select('*')
+    .eq('id', id)
+    .eq('status', 'scheduled')
+    .single();
+
+  if (loadErr || !post) {
+    res.status(404).json({ error: 'Post not found or not in scheduled status.' });
+    return;
+  }
+
+  // 2. Publish through the existing orchestrator (handles rate limits, adapters, status updates)
+  await publishPost(post as ComposerPost);
+
+  // 3. Re-fetch the post to return its updated status
+  const { data: updated, error: fetchErr } = await supabase
+    .from('posts')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (fetchErr || !updated) {
+    res.status(500).json({ error: 'Published but failed to fetch updated post.' });
+    return;
+  }
+
+  res.json(updated);
 });
 
 // ─── PATCH /api/composer/:id/reject ─────────────────────────────────────────
@@ -156,6 +214,73 @@ router.patch('/api/composer/:id/reject', async (req, res) => {
   });
 });
 
+// ─── PATCH /api/composer/:id/revise ──────────────────────────────────────────
+// Revises a draft with founder feedback. The original is rejected, a new draft
+// is created incorporating the feedback, and the feedback triplet is saved to
+// composer_feedback so the system learns over time.
+router.patch('/api/composer/:id/revise', async (req, res) => {
+  const { id } = req.params;
+  const { feedback } = req.body;
+
+  if (!feedback || typeof feedback !== 'string' || feedback.trim().length === 0) {
+    res.status(400).json({ error: 'feedback is required and must be a non-empty string.' });
+    return;
+  }
+
+  // 1. Load the original post
+  const { data: post, error: loadErr } = await supabase
+    .from('posts')
+    .select('*')
+    .eq('id', id)
+    .eq('status', 'draft')
+    .single();
+
+  if (loadErr || !post) {
+    res.status(404).json({ error: 'Post not found or not in draft status.' });
+    return;
+  }
+
+  // 2. Look up the topic data for context
+  const today = getSydneyDate();
+  const { data: topicData } = await supabase
+    .from('emerging_topics')
+    .select('topic_title, summary, keyword, sample_urls')
+    .eq('date', today)
+    .eq('topic_title', post.source_topic)
+    .single();
+
+  // 3. Generate the revision
+  const revision = await reviseDraft(
+    post.content,
+    {
+      topicId: '',
+      topicTitle: post.source_topic || '',
+      topicSummary: topicData?.summary || '',
+      keywords: [topicData?.keyword || post.source_keyword || ''],
+      sourceLinks: topicData?.sample_urls || [],
+      platform: post.platform as Platform,
+    },
+    feedback.trim(),
+    post.scheduled_at,
+  );
+
+  if (!revision) {
+    res.status(500).json({ error: 'Failed to generate revision. Check API key configuration.' });
+    return;
+  }
+
+  // 4. Mark original as rejected
+  await supabase
+    .from('posts')
+    .update({ status: 'rejected', updated_at: new Date().toISOString() })
+    .eq('id', id);
+
+  res.json({
+    rejected: { id: post.id, source_topic: post.source_topic },
+    revision,
+  });
+});
+
 // ─── PATCH /api/composer/:id/edit ───────────────────────────────────────────
 // Updates post content only. Status remains 'draft'.
 router.patch('/api/composer/:id/edit', async (req, res) => {
@@ -181,6 +306,24 @@ router.patch('/api/composer/:id/edit', async (req, res) => {
   }
 
   res.json(data);
+});
+
+// ─── DELETE /api/composer/:id ────────────────────────────────────────────────
+// Deletes a post entirely. Works for any status.
+router.delete('/api/composer/:id', async (req, res) => {
+  const { id } = req.params;
+
+  const { error } = await supabase
+    .from('posts')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+
+  res.json({ deleted: true, id: Number(id) });
 });
 
 export default router;

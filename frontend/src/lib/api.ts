@@ -74,6 +74,36 @@ export interface RunLogEntry {
   created_at: string;
 }
 
+export interface ComposerPost {
+  id: number;
+  platform: string;
+  content: string;
+  status: string;
+  scheduled_at: string | null;
+  published_at: string | null;
+  platform_post_id: string | null;
+  source_topic: string | null;
+  source_keyword: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComposerStats {
+  date: string;
+  twitter: { count: number; limit: number };
+  linkedin: { count: number; limit: number };
+}
+
+export interface RejectResult {
+  rejected: { id: number; source_topic: string | null };
+  replacement: ComposerPost | null;
+}
+
+export interface ReviseResult {
+  rejected: { id: number; source_topic: string | null };
+  revision: ComposerPost;
+}
+
 // --- API methods ---
 
 export const api = {
@@ -97,5 +127,35 @@ export const api = {
           body: JSON.stringify({ platform }),
         },
       ),
+  },
+
+  composer: {
+    queue: () => request<ComposerPost[]>("/api/composer/queue"),
+    stats: () => request<ComposerStats>("/api/composer/stats"),
+    approve: (id: number) =>
+      request<ComposerPost>(`/api/composer/${id}/approve`, { method: "PATCH" }),
+    reject: (id: number) =>
+      request<RejectResult>(`/api/composer/${id}/reject`, { method: "PATCH" }),
+    revise: (id: number, feedback: string) =>
+      request<ReviseResult>(`/api/composer/${id}/revise`, {
+        method: "PATCH",
+        body: JSON.stringify({ feedback }),
+      }),
+    edit: (id: number, content: string) =>
+      request<ComposerPost>(`/api/composer/${id}/edit`, {
+        method: "PATCH",
+        body: JSON.stringify({ content }),
+      }),
+    draft: (body: {
+      topicTitle: string;
+      topicSummary: string;
+      keywords: string[];
+      sourceLinks?: string[];
+      platform: string;
+    }) =>
+      request<ComposerPost>("/api/composer/draft", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
   },
 };
