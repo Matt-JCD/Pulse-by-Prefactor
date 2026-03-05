@@ -2,20 +2,31 @@ import cron from 'node-cron';
 import { supabase } from '../db/supabase.js';
 import { publishPost } from './index.js';
 import { autoDraftDailyPosts } from './drafting.js';
+import { refreshEngagement } from '../scheduler/engagement.js';
 import type { ComposerPost } from './types.js';
 
+// Slack functions are imported lazily to avoid circular deps and missing env vars
+let slackModule: typeof import('./slack.js') | null = null;
+async function getSlack() {
+  if (!slackModule) {
+    slackModule = await import('./slack.js');
+  }
+  return slackModule;
+}
+
 /**
- * Starts the composer's own cron jobs — fully independent of the intelligence pipeline.
+ * Starts the composer's cron jobs — fully independent of the intelligence pipeline.
  *
- * Two jobs:
- * 1. Auto-draft: 6:30am AEST Mon–Fri. Reads today's emerging_topics and drafts 6 posts.
- *    Intelligence runs at 6am, so topics should be in the DB by 6:30.
- * 2. Publisher: Hourly 6am–11pm AEST. Publishes approved posts whose scheduled_at has arrived.
+ * Jobs:
+ * 1. Auto-draft: 6:00am AEST Mon–Fri. Reads emerging_topics and drafts posts.
+ * 2. Slack digest: 6:30am AEST daily. Sends approval digest to Matt.
+ * 3. Slack nudge: 7:15am AEST daily. Pings Matt about unapproved posts.
+ * 4. Publisher: every 30min 7:30am–11pm AEST. Fires approved posts whose scheduled_at has arrived.
  */
 export function startComposerScheduler(): void {
-  // ── Auto-draft: 6:30am AEST, Mon–Fri ──
+  // ── Auto-draft: 6:00am AEST, Mon–Fri ──
   cron.schedule(
-    '30 6 * * 1-5',
+    '0 6 * * 1-5',
     async () => {
       console.log('[composer-scheduler] Auto-draft starting...');
       try {
@@ -28,9 +39,40 @@ export function startComposerScheduler(): void {
     { timezone: 'Australia/Sydney' },
   );
 
-  // ── Publisher: hourly 6am–11pm AEST ──
+  // ── Slack daily digest: 6:30am AEST, every day ──
   cron.schedule(
-    '0 6-23 * * *',
+    '30 6 * * *',
+    async () => {
+      console.log('[composer-scheduler] Sending daily digest...');
+      try {
+        const slack = await getSlack();
+        await slack.sendDailyDigest();
+        console.log('[composer-scheduler] Daily digest sent.');
+      } catch (err) {
+        console.error('[composer-scheduler] Digest failed:', err instanceof Error ? err.message : err);
+      }
+    },
+    { timezone: 'Australia/Sydney' },
+  );
+
+  // ── Slack nudge: 7:15am AEST, every day ──
+  cron.schedule(
+    '15 7 * * *',
+    async () => {
+      try {
+        const slack = await getSlack();
+        await slack.sendNudge();
+      } catch (err) {
+        console.error('[composer-scheduler] Nudge failed:', err instanceof Error ? err.message : err);
+      }
+    },
+    { timezone: 'Australia/Sydney' },
+  );
+
+  // ── Publisher: every 30 minutes, 7:30am–11pm AEST ──
+  // Only fires posts with status 'approved' whose scheduled_at has arrived.
+  cron.schedule(
+    '0,30 7-23 * * *',
     async () => {
       try {
         const now = new Date().toISOString();
@@ -38,7 +80,7 @@ export function startComposerScheduler(): void {
         const { data: duePosts, error } = await supabase
           .from('posts')
           .select('*')
-          .eq('status', 'scheduled')
+          .eq('status', 'approved')
           .lte('scheduled_at', now)
           .order('scheduled_at', { ascending: true });
 
@@ -61,5 +103,20 @@ export function startComposerScheduler(): void {
     { timezone: 'Australia/Sydney' },
   );
 
-  console.log('[composer-scheduler] Crons registered: auto-draft 6:30am + publisher hourly 6am–11pm AEST.');
+  // ── Engagement refresh: midnight AEST daily (14:00 UTC) ──
+  cron.schedule(
+    '0 0 * * *',
+    async () => {
+      console.log('[composer-scheduler] Engagement refresh starting...');
+      try {
+        await refreshEngagement();
+        console.log('[composer-scheduler] Engagement refresh complete.');
+      } catch (err) {
+        console.error('[composer-scheduler] Engagement refresh failed:', err instanceof Error ? err.message : err);
+      }
+    },
+    { timezone: 'Australia/Sydney' },
+  );
+
+  console.log('[composer-scheduler] Crons registered: auto-draft 6am, digest 6:30am, nudge 7:15am, publisher 7:30am–11pm, engagement midnight AEST.');
 }

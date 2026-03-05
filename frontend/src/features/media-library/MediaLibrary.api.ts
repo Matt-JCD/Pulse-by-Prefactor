@@ -1,0 +1,25 @@
+/**
+ * MediaLibrary.api.ts — server-safe fetch functions.
+ * Called from Server Components (page.tsx) for initial data loading.
+ */
+
+import type { Episode } from '@/lib/api';
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`API ${path} returned ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+export async function fetchEpisodes(): Promise<Episode[]> {
+  try {
+    return await get<Episode[]>('/api/media/episodes');
+  } catch {
+    return [];
+  }
+}

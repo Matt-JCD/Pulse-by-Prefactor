@@ -1,7 +1,9 @@
 'use client';
 
+import { useState } from 'react';
 import type { ComposerPost } from '@/lib/api';
 import { useComposer } from '../useComposer';
+import { ACCOUNTS } from '../types';
 import { PostCard } from './PostCard';
 
 interface Props {
@@ -9,6 +11,7 @@ interface Props {
 }
 
 export function PostQueue({ posts }: Props) {
+  const [accountFilter, setAccountFilter] = useState<string | null>(null);
   const {
     editingPostId,
     setEditingPostId,
@@ -16,16 +19,23 @@ export function PostQueue({ posts }: Props) {
     setRejectingPostId,
     isLoading,
     actionError,
+    handleSubmit,
     handleApprove,
     handleReject,
     handleRevise,
     handlePublishNow,
     handleEdit,
+    handleEditSchedule,
     handleDelete,
   } = useComposer();
 
-  const drafts = posts.filter((p) => p.status === 'draft');
-  const scheduled = posts.filter((p) => p.status === 'scheduled');
+  const filtered = accountFilter
+    ? posts.filter((p) => p.account === accountFilter)
+    : posts;
+
+  const drafts = filtered.filter((p) => p.status === 'draft');
+  const pendingApproval = filtered.filter((p) => p.status === 'pending_approval');
+  const approved = filtered.filter((p) => p.status === 'approved');
 
   if (posts.length === 0) {
     return (
@@ -46,6 +56,42 @@ export function PostQueue({ posts }: Props) {
         </div>
       )}
 
+      {/* Account filter */}
+      <div className="mb-4 flex items-center gap-2">
+        <button
+          onClick={() => setAccountFilter(null)}
+          className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+            accountFilter === null
+              ? 'bg-aqua/15 text-aqua'
+              : 'text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          All
+        </button>
+        {ACCOUNTS.map((acc) => (
+          <button
+            key={acc.slug}
+            onClick={() => setAccountFilter(acc.slug)}
+            className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+              accountFilter === acc.slug
+                ? ''
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+            style={
+              accountFilter === acc.slug
+                ? { backgroundColor: `${acc.badgeColor}30`, color: acc.badgeColor }
+                : undefined
+            }
+          >
+            {acc.label}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 && (
+        <p className="text-sm text-zinc-500 py-4">No posts for this account.</p>
+      )}
+
       {/* Drafts — need review */}
       {drafts.length > 0 && (
         <section className="mb-8">
@@ -63,12 +109,14 @@ export function PostQueue({ posts }: Props) {
                 editingPostId={editingPostId}
                 rejectingPostId={rejectingPostId}
                 isLoading={isLoading}
+                onSubmit={handleSubmit}
                 onApprove={handleApprove}
                 onReject={handleReject}
                 onRevise={handleRevise}
                 onPublishNow={handlePublishNow}
                 onDelete={handleDelete}
                 onEdit={handleEdit}
+                onEditSchedule={handleEditSchedule}
                 onStartEdit={setEditingPostId}
                 onCancelEdit={() => setEditingPostId(null)}
                 onStartReject={setRejectingPostId}
@@ -79,26 +127,60 @@ export function PostQueue({ posts }: Props) {
         </section>
       )}
 
-      {/* Scheduled — approved, waiting to publish */}
-      {scheduled.length > 0 && (
+      {/* Pending approval */}
+      {pendingApproval.length > 0 && (
         <section>
           <h2 className="mb-3 text-xs font-medium uppercase tracking-widest text-zinc-500">
-            Scheduled ({scheduled.length})
+            Pending approval ({pendingApproval.length})
           </h2>
           <div className="flex flex-col gap-3">
-            {scheduled.map((post) => (
+            {pendingApproval.map((post) => (
               <PostCard
                 key={post.id}
                 post={post}
                 editingPostId={editingPostId}
                 rejectingPostId={rejectingPostId}
                 isLoading={isLoading}
+                onSubmit={handleSubmit}
                 onApprove={handleApprove}
                 onReject={handleReject}
                 onRevise={handleRevise}
                 onPublishNow={handlePublishNow}
                 onDelete={handleDelete}
                 onEdit={handleEdit}
+                onEditSchedule={handleEditSchedule}
+                onStartEdit={setEditingPostId}
+                onCancelEdit={() => setEditingPostId(null)}
+                onStartReject={setRejectingPostId}
+                onCancelReject={() => setRejectingPostId(null)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Approved — waiting to publish */}
+      {approved.length > 0 && (
+        <section className={pendingApproval.length > 0 ? 'mt-8' : ''}>
+          <h2 className="mb-3 text-xs font-medium uppercase tracking-widest text-zinc-500">
+            Approved ({approved.length})
+          </h2>
+          <div className="flex flex-col gap-3">
+            {approved.map((post) => (
+              <PostCard
+                key={post.id}
+                post={post}
+                editingPostId={editingPostId}
+                rejectingPostId={rejectingPostId}
+                isLoading={isLoading}
+                onSubmit={handleSubmit}
+                onApprove={handleApprove}
+                onReject={handleReject}
+                onRevise={handleRevise}
+                onPublishNow={handlePublishNow}
+                onDelete={handleDelete}
+                onEdit={handleEdit}
+                onEditSchedule={handleEditSchedule}
                 onStartEdit={setEditingPostId}
                 onCancelEdit={() => setEditingPostId(null)}
                 onStartReject={setRejectingPostId}

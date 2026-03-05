@@ -1,5 +1,6 @@
 import type { ComposerPost, ComposerStats, EmergingTopic } from '@/lib/api';
 import { ComposerHeader } from './components/ComposerHeader';
+import { WeeklyMixPanel } from './components/WeeklyMixPanel';
 import { PostQueue } from './components/PostQueue';
 import { TopicDraftPicker } from './components/TopicDraftPicker';
 import { PostHistory } from './components/PostHistory';
@@ -16,6 +17,9 @@ export function Composer({ posts, stats, topics, history }: Props) {
     <div className="min-h-screen bg-[#0A0A0B] px-6 py-6 max-w-[1400px] mx-auto">
       {/* Header: stats bar with X/Twitter counter */}
       <ComposerHeader stats={stats} />
+
+      {/* Weekly category mix overview */}
+      <WeeklyMixPanel refreshKey={posts.length} />
 
       {/* Review queue: drafts + scheduled posts */}
       <PostQueue posts={posts} />

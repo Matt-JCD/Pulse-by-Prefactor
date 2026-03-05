@@ -1,24 +1,30 @@
 import { supabase } from '../db/supabase.js';
 import { getAdapter } from './adapters/index.js';
 import { isAtDailyLimit, incrementDailyCount } from './counter.js';
-import type { Platform, ComposerPost } from './types.js';
+import { getPlatformForAccount } from './accounts.js';
+import { embedPost } from '../scheduler/embeddings.js';
+import type { Platform, ComposerPost, AccountSlug } from './types.js';
 
 /**
  * Publishes a single post through its platform adapter.
  *
  * Flow:
- * 1. Check daily rate limit — skip if at limit
- * 2. Look up the correct adapter (twitter, linkedin, etc.)
- * 3. Call adapter.publish() — adapters never throw
- * 4. Update the post row with result (published or failed)
- * 5. Increment daily counter on success
+ * 1. Resolve platform from the post's account
+ * 2. Check daily rate limit — skip if at limit
+ * 3. Look up the correct adapter (twitter, linkedin, etc.)
+ * 4. Call adapter.publish() — adapters never throw
+ * 5. Update the post row with result (published or failed)
+ * 6. Increment daily counter on success
  */
 export async function publishPost(post: ComposerPost): Promise<void> {
-  const platform = post.platform as Platform;
+  // Resolve platform from account (e.g. agents_after_dark_linkedin → 'linkedin')
+  const platform = post.account
+    ? getPlatformForAccount(post.account as AccountSlug)
+    : post.platform as Platform;
 
   // Rate limit check
   if (await isAtDailyLimit(platform)) {
-    console.warn(`[composer] Daily limit reached for ${platform}. Marking post #${post.id} as failed.`);
+    console.warn(`[composer] Daily limit reached for ${platform}. Marking post #${post.id} (${post.account}) as failed.`);
     await supabase
       .from('posts')
       .update({
@@ -32,7 +38,7 @@ export async function publishPost(post: ComposerPost): Promise<void> {
   // Adapter lookup
   const adapter = getAdapter(platform);
   if (!adapter) {
-    console.error(`[composer] No adapter for platform "${platform}".`);
+    console.error(`[composer] No adapter for platform "${platform}" (account: ${post.account}).`);
     await supabase
       .from('posts')
       .update({
@@ -43,7 +49,7 @@ export async function publishPost(post: ComposerPost): Promise<void> {
     return;
   }
 
-  console.log(`[composer] Publishing post #${post.id} to ${platform}...`);
+  console.log(`[composer] Publishing post #${post.id} [${post.account}] to ${platform}...`);
   const result = await adapter.publish(post.content);
 
   if (result.success) {
@@ -58,7 +64,10 @@ export async function publishPost(post: ComposerPost): Promise<void> {
       .eq('id', post.id);
 
     await incrementDailyCount(platform);
-    console.log(`[composer] Post #${post.id} published successfully. Platform ID: ${result.postId || 'n/a'}`);
+    console.log(`[composer] Post #${post.id} [${post.account}] published. Platform ID: ${result.postId || 'n/a'}`);
+
+    // Fire-and-forget embedding generation
+    embedPost(post.id, post.content);
   } else {
     await supabase
       .from('posts')
@@ -68,6 +77,6 @@ export async function publishPost(post: ComposerPost): Promise<void> {
       })
       .eq('id', post.id);
 
-    console.error(`[composer] Post #${post.id} failed: ${result.error}`);
+    console.error(`[composer] Post #${post.id} [${post.account}] failed: ${result.error}`);
   }
 }

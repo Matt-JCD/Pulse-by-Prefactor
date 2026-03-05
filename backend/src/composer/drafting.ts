@@ -1,13 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { supabase } from '../db/supabase.js';
-import { getSydneyDate } from '../utils/sydneyDate.js';
+import { getSydneyDate, getSydneyDayBounds, sydneyLocalToUtcIso } from '../utils/sydneyDate.js';
 import { withRunLog } from '../agents/shared/runLogger.js';
-import type { DraftRequest, ComposerPost, Platform } from './types.js';
+import { getAccountPrompt } from './prompts.js';
+import { ACCOUNTS, getPlatformForAccount, ACCOUNT_SLUGS } from './accounts.js';
+import type { DraftRequest, ComposerPost, Platform, AccountSlug } from './types.js';
 
-// 5 time slots in AEST → stored as UTC (AEST = UTC+10).
-// 07:00 AEST = 21:00 UTC (prev day), 09:00 = 23:00, 11:00 = 01:00,
-// 13:00 = 03:00, 15:00 = 05:00
-const SCHEDULED_SLOTS_UTC = ['21:00', '23:00', '01:00', '03:00', '05:00'];
+// Daily posting slots in Sydney local time.
+const SCHEDULED_SLOTS_SYDNEY = ['07:00', '09:00', '11:00', '13:00', '15:00'];
 
 /**
  * Gets the configured model and API key from the config table.
@@ -31,11 +31,13 @@ async function getConfig() {
 // Each feedback entry is a triplet: original draft → feedback → revised draft.
 // These get injected into the system prompt as few-shot examples.
 
-async function loadEditorialMemory(platform: Platform, limit = 15): Promise<string> {
+async function loadEditorialMemory(account: AccountSlug, limit = 15): Promise<string> {
+  // Try account-specific feedback first, fall back to platform-level for older entries
+  const platform = getPlatformForAccount(account);
   const { data, error } = await supabase
     .from('composer_feedback')
     .select('original_content, feedback, revised_content, topic_title')
-    .eq('platform', platform)
+    .or(`account.eq.${account},and(account.is.null,platform.eq.${platform})`)
     .order('created_at', { ascending: false })
     .limit(limit);
 
@@ -61,90 +63,13 @@ ${examples}`;
 }
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
-// Distinct voices for X and LinkedIn, with Prefactor's domain focus,
-// controlled controversy, and editorial memory from past feedback.
+// Each account has its own voice prompt (defined in prompts.ts).
+// Editorial memory is appended so every draft learns from past feedback.
 
-function getSystemPrompt(platform: Platform, editorialMemory: string): string {
-  const baseVoice = `You are writing social media posts for Prefactor, an AI governance company. You are Prefactor the company — not a person.
-
-## The Four Prefactor Voice Pillars
-
-1. **Human Directness** — Talk to people, not personas. Acknowledge reality including limitations. Communicate with humans solving hard problems.
-2. **Earned Authority** — Speak from experience. Authority comes from what we ship, not claims we make.
-3. **Engineering Clarity** — Logical, specific, unambiguous. If there's a simpler way to say it without losing precision, take it. Don't assume the audience knows the jargon.
-4. **Favour Simplicity** — Clarity over complexity. Simplicity isn't lack of depth — it's disciplined thinking. Complexity hides risk; simplicity exposes what matters.
-
-## Prefactor's Domain
-Prefactor builds governance and observability infrastructure for AI agent systems.
-When a topic touches governance, observability, quality management, or compliance
-in enterprise AI — make that connection explicit and specific.
-When it doesn't, comment as an informed technical voice without forcing it.
-
-## Point of View
-DO NOT just report news. Take a position.
-Be mildly provocative — enough that a CTO pauses and thinks "that's an interesting take",
-not so much that they dismiss you. Challenge comfortable assumptions.
-If everyone would agree with your post, it's too safe. Say something specific and defensible
-that not everyone is saying.
-The goal is: informed opinion, not press release.
-
-## Rules
-- Only use facts from the topic title, summary, keywords, and source links provided — never invent claims.
-- Could this be defended to a skeptical CTO?
-- Would an engineer know exactly what to do next?
-- Is any jargon explained?
-- Does it sound human, not like a press release?
-- If you removed all adjectives, does the substance still stand?
-
-## Do NOT
-- Say "game-changer", "revolutionize", "disrupt", "magic", or "one-click"
-- Make vague claims like "Agents need secure access" — be specific
-- Use hype language or superlatives
-- Invent facts, statistics, or capabilities not in the provided topic data
-- Just restate the headline — provide a take, not a summary
-
-## Do
-- Be specific: name the product, version, company
-- Be direct: say what it does, not what it promises
-- Be practical: give engineers something they can act on
-- Take a position: what does this mean, and why should someone care?`;
-
-  // Inject editorial memory right after the base voice, before platform-specific rules.
-  // This means every draft — auto-draft, manual, and revision — benefits from past feedback.
+function getSystemPrompt(account: AccountSlug, editorialMemory: string): string {
+  const accountPrompt = getAccountPrompt(account);
   const memoryBlock = editorialMemory ? `\n\n${editorialMemory}` : '';
-
-  if (platform === 'twitter') {
-    return `${baseVoice}${memoryBlock}
-
-## Platform: X (Twitter)
-- HARD LIMIT: 280 characters. Count carefully. Do not exceed 280.
-- Voice: Sharp, direct, opinionated. Like a CTO texting a peer after reading the news.
-  Not formal. Not corporate. A real person with a real take.
-- Lead with the take, not the news. The hook IS the opinion.
-- One clear, slightly provocative point per post.
-- 2–3 relevant hashtags at the end. Use hashtags connected to the topic and
-  Prefactor's domain (e.g. #AIGovernance, #AgentOps, #LLMOps, #EnterpriseAI).
-  Hashtags count toward the 280-character limit — keep total under 280.
-- No threads. No "here's why this matters" lead-ins.
-- If you can't make it interesting in 280 chars, pick a sharper angle.
-
-Produce the tweet text only. No quotes, no labels, no explanation.`;
-  }
-
-  // LinkedIn
-  return `${baseVoice}${memoryBlock}
-
-## Platform: LinkedIn
-- Up to 3,000 characters. Use line breaks for readability.
-- Voice: Thoughtful authority. Like a founder writing a short memo to their advisory board.
-  More nuanced than X — you have space to build an argument.
-- Open with a contrarian or unexpected observation that hooks the reader.
-- Build a case: what most people assume → why that's incomplete or wrong → what's actually true.
-- End with a specific, actionable implication. What should a VP of Engineering do differently?
-- 3–5 relevant hashtags at the end.
-- No corporate fluff. No "I'm excited to announce". No filler sentences.
-
-Produce the post text only. No quotes, no labels, no explanation.`;
+  return `${accountPrompt}${memoryBlock}`;
 }
 
 // ─── Topic Curation ───────────────────────────────────────────────────────────
@@ -257,9 +182,11 @@ export async function draftPost(request: DraftRequest, scheduledAt?: string): Pr
   }
 
   const client = new Anthropic({ apiKey: config.apiKey });
+  const account = request.account;
+  const platform = getPlatformForAccount(account);
 
   // Load editorial memory so every draft benefits from past feedback
-  const editorialMemory = await loadEditorialMemory(request.platform);
+  const editorialMemory = await loadEditorialMemory(account);
 
   const sourceLinksText = request.sourceLinks && request.sourceLinks.length > 0
     ? `Source links:\n${request.sourceLinks.join('\n')}`
@@ -269,24 +196,24 @@ export async function draftPost(request: DraftRequest, scheduledAt?: string): Pr
     ? `Writing angle: ${request.angle}`
     : '';
 
-  const userPrompt = `You're writing for Prefactor. DO NOT restate or summarise the headline.
-Provide Prefactor's take — an opinion, not a report.
+  // Build user prompt — include topic context, guest info for podcast accounts
+  const podcastContext = request.guestName
+    ? `Guest name: ${request.guestName}\nEpisode number: ${request.episodeNumber || 'N/A'}\n`
+    : '';
 
-Topic: ${request.topicTitle}
+  const userPrompt = `Topic: ${request.topicTitle}
 Summary: ${request.topicSummary}
 Keywords: ${request.keywords.join(', ')}
-${sourceLinksText}
+Category: ${request.category || 'general'}
+${podcastContext}${sourceLinksText}
 ${angleText}
-
-React to this. What's the implication most people are missing?
-What would you say about this to a skeptical CTO over coffee?
 
 Write exactly ONE post. Return only the post text, nothing else.`;
 
   const response = await client.messages.create({
     model: config.model,
     max_tokens: 512,
-    system: getSystemPrompt(request.platform, editorialMemory),
+    system: getSystemPrompt(account, editorialMemory),
     messages: [{ role: 'user', content: userPrompt }],
   });
 
@@ -298,14 +225,19 @@ Write exactly ONE post. Return only the post text, nothing else.`;
 
   const totalTokens =
     (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0);
-  console.log(`[composer/drafting] Generated draft (${totalTokens} tokens, ${text.length} chars)`);
+  console.log(`[composer/drafting] Generated ${account} draft (${totalTokens} tokens, ${text.length} chars)`);
 
   const { data, error } = await supabase
     .from('posts')
     .insert({
-      platform: request.platform,
+      account,
+      platform,
       content: text,
       status: 'draft',
+      category: request.category || null,
+      is_podcast: !!request.guestName,
+      guest_name: request.guestName || null,
+      episode_number: request.episodeNumber || null,
       scheduled_at: scheduledAt || null,
       source_topic: request.topicTitle,
       source_keyword: request.keywords[0] || null,
@@ -339,7 +271,9 @@ export async function reviseDraft(
   }
 
   const client = new Anthropic({ apiKey: config.apiKey });
-  const editorialMemory = await loadEditorialMemory(request.platform);
+  const account = request.account;
+  const platform = getPlatformForAccount(account);
+  const editorialMemory = await loadEditorialMemory(account);
 
   const sourceLinksText = request.sourceLinks && request.sourceLinks.length > 0
     ? `Source links:\n${request.sourceLinks.join('\n')}`
@@ -366,7 +300,7 @@ Return only the revised post text, nothing else.`;
   const response = await client.messages.create({
     model: config.model,
     max_tokens: 512,
-    system: getSystemPrompt(request.platform, editorialMemory),
+    system: getSystemPrompt(account, editorialMemory),
     messages: [{ role: 'user', content: userPrompt }],
   });
 
@@ -388,7 +322,8 @@ Return only the revised post text, nothing else.`;
       feedback,
       revised_content: text,
       topic_title: request.topicTitle,
-      platform: request.platform,
+      platform,
+      account,
     });
 
   if (fbError) {
@@ -400,9 +335,11 @@ Return only the revised post text, nothing else.`;
   const { data, error } = await supabase
     .from('posts')
     .insert({
-      platform: request.platform,
+      account,
+      platform,
       content: text,
       status: 'draft',
+      category: request.category || null,
       scheduled_at: scheduledAt || null,
       source_topic: request.topicTitle,
       source_keyword: request.keywords[0] || null,
@@ -430,6 +367,7 @@ Return only the revised post text, nothing else.`;
 export async function autoDraftDailyPosts(): Promise<void> {
   await withRunLog('composer-auto-draft', async () => {
     const today = getSydneyDate();
+    const { startIso: todayStartIso, endIso: todayEndIso } = getSydneyDayBounds(today);
     const config = await getConfig();
 
     if (!config.apiKey) {
@@ -454,95 +392,102 @@ export async function autoDraftDailyPosts(): Promise<void> {
       return { llmTokens: 0 };
     }
 
-    // Check which topics already have drafts today to avoid duplicates
-    const { data: existingPosts } = await supabase
-      .from('posts')
-      .select('source_topic, scheduled_at')
-      .eq('platform', 'twitter')
-      .gte('created_at', `${today}T00:00:00Z`);
+    // Draft for each account that has auto-draft enabled.
+    // For now: prefactor_x gets the intelligence-driven auto-draft (was the original account).
+    // Other accounts get manual drafting only until Phase 2.
+    const autoDraftAccounts: AccountSlug[] = ['prefactor_x'];
 
-    const draftedTopics = new Set((existingPosts || []).map((p) => p.source_topic));
-    const draftedSlots = new Set(
-      (existingPosts || []).map((p) => p.scheduled_at?.slice(11, 16)),
-    );
+    for (const account of autoDraftAccounts) {
+      console.log(`[composer/drafting] Auto-drafting for ${account}...`);
 
-    // Filter out already-drafted topics before curation
-    const availableTopics = topics.filter((t) => !draftedTopics.has(t.topic_title));
+      // Check which topics already have drafts today for this account
+      const { data: existingPosts } = await supabase
+        .from('posts')
+        .select('source_topic, scheduled_at')
+        .eq('account', account)
+        .gte('created_at', todayStartIso)
+        .lt('created_at', todayEndIso);
 
-    if (availableTopics.length === 0) {
-      console.log('[composer/drafting] All topics already drafted. Skipping.');
-      return { llmTokens: 0 };
-    }
+      const draftedTopics = new Set((existingPosts || []).map((p) => p.source_topic));
+      const draftedSlots = new Set(
+        (existingPosts || [])
+          .map((p) => (p.scheduled_at ? formatSydneySlotTime(p.scheduled_at) : null))
+          .filter((slot): slot is string => !!slot),
+      );
 
-    // Load editorial memory for curation context
-    const editorialMemory = await loadEditorialMemory('twitter');
+      // Filter out already-drafted topics before curation
+      const availableTopics = topics.filter((t) => !draftedTopics.has(t.topic_title));
 
-    // Curate: Sonnet picks the 5 best topics with writing angles
-    console.log(`[composer/drafting] Curating from ${availableTopics.length} available topics...`);
-    const curated = await curateTopics(availableTopics, editorialMemory, config.apiKey);
+      if (availableTopics.length === 0) {
+        console.log(`[composer/drafting] All topics already drafted for ${account}. Skipping.`);
+        continue;
+      }
 
-    if (curated.length === 0) {
-      console.error('[composer/drafting] Curation returned no topics. Falling back to top 5.');
-      // Fallback: use top 5 by post_count without angles
-      const fallback = availableTopics.slice(0, 5);
+      // Load editorial memory for curation context
+      const editorialMemory = await loadEditorialMemory(account);
+
+      // Curate: Sonnet picks the 5 best topics with writing angles
+      console.log(`[composer/drafting] Curating from ${availableTopics.length} available topics for ${account}...`);
+      const curated = await curateTopics(availableTopics, editorialMemory, config.apiKey);
+
+      const topicsToUse = curated.length > 0
+        ? curated
+        : availableTopics.slice(0, 5).map((t) => ({
+            topic_title: t.topic_title,
+            angle: '',
+            summary: t.summary,
+            keyword: t.keyword,
+            sample_urls: t.sample_urls || [],
+          }));
+
+      if (curated.length === 0) {
+        console.error(`[composer/drafting] Curation returned no topics for ${account}. Falling back to top 5.`);
+      }
+
+      // Draft a post for each curated topic, assigning to time slots
       let slotIndex = 0;
-      for (const topic of fallback) {
-        while (slotIndex < SCHEDULED_SLOTS_UTC.length && draftedSlots.has(SCHEDULED_SLOTS_UTC[slotIndex])) {
+      for (const topic of topicsToUse) {
+        // Find the next available slot
+        while (slotIndex < SCHEDULED_SLOTS_SYDNEY.length && draftedSlots.has(SCHEDULED_SLOTS_SYDNEY[slotIndex])) {
           slotIndex++;
         }
-        if (slotIndex >= SCHEDULED_SLOTS_UTC.length) break;
+        if (slotIndex >= SCHEDULED_SLOTS_SYDNEY.length) break;
 
-        const scheduledAt = `${today}T${SCHEDULED_SLOTS_UTC[slotIndex]}:00Z`;
+        const slotTime = SCHEDULED_SLOTS_SYDNEY[slotIndex];
+        const scheduledAt = sydneyLocalToUtcIso(today, slotTime);
         slotIndex++;
 
-        await draftPost(
+        console.log(`[composer/drafting] Drafting ${account} for slot ${slotTime} Sydney: "${topic.topic_title}"`);
+
+        const post = await draftPost(
           {
             topicId: '',
             topicTitle: topic.topic_title,
             topicSummary: topic.summary,
             keywords: [topic.keyword],
-            sourceLinks: topic.sample_urls || [],
-            platform: 'twitter',
+            sourceLinks: topic.sample_urls,
+            platform: getPlatformForAccount(account),
+            account,
+            angle: topic.angle,
           },
           scheduledAt,
         );
-      }
-      return { llmTokens: 0 };
-    }
 
-    // Draft a post for each curated topic, assigning to time slots
-    let slotIndex = 0;
-    for (const topic of curated) {
-      // Find the next available slot
-      while (slotIndex < SCHEDULED_SLOTS_UTC.length && draftedSlots.has(SCHEDULED_SLOTS_UTC[slotIndex])) {
-        slotIndex++;
-      }
-      if (slotIndex >= SCHEDULED_SLOTS_UTC.length) break;
-
-      const slotTime = SCHEDULED_SLOTS_UTC[slotIndex];
-      const scheduledAt = `${today}T${slotTime}:00Z`;
-      slotIndex++;
-
-      console.log(`[composer/drafting] Drafting for slot ${slotTime} UTC: "${topic.topic_title}" (angle: ${topic.angle})`);
-
-      const post = await draftPost(
-        {
-          topicId: '',
-          topicTitle: topic.topic_title,
-          topicSummary: topic.summary,
-          keywords: [topic.keyword],
-          sourceLinks: topic.sample_urls,
-          platform: 'twitter',
-          angle: topic.angle,
-        },
-        scheduledAt,
-      );
-
-      if (post) {
-        console.log(`[composer/drafting] Created draft #${post.id} for ${slotTime} UTC`);
+        if (post) {
+          console.log(`[composer/drafting] Created ${account} draft #${post.id} for ${slotTime} Sydney`);
+        }
       }
     }
 
     return { llmTokens: 0 };
   });
+}
+
+function formatSydneySlotTime(iso: string): string {
+  return new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Sydney',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(iso));
 }

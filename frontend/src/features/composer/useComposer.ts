@@ -39,6 +39,19 @@ export function useComposer() {
     }
   }
 
+  async function handleSubmit(id: number) {
+    setIsLoading(true);
+    setActionError(null);
+    try {
+      await patch(`/api/composer/${id}/submit`);
+      router.refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Submit failed');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function handleReject(id: number) {
     setIsLoading(true);
     setActionError(null);
@@ -111,6 +124,19 @@ export function useComposer() {
     }
   }
 
+  async function handleEditSchedule(id: number, scheduledAt: string) {
+    setIsLoading(true);
+    setActionError(null);
+    try {
+      await patch(`/api/composer/${id}/edit`, { scheduled_at: scheduledAt });
+      router.refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Schedule update failed');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   return {
     editingPostId,
     setEditingPostId,
@@ -118,11 +144,13 @@ export function useComposer() {
     setRejectingPostId,
     isLoading,
     actionError,
+    handleSubmit,
     handleApprove,
     handleReject,
     handleRevise,
     handlePublishNow,
     handleEdit,
+    handleEditSchedule,
     handleDelete,
   };
 }
