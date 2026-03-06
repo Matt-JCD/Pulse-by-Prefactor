@@ -69,9 +69,12 @@ async def list_connections(
 
 @app.post("/run")
 async def trigger_run(dry_run: bool = Query(False)):
-    """Manually trigger a pipeline run."""
-    asyncio.create_task(run_pipeline(dry_run=dry_run))
-    return {"status": "started", "dry_run": dry_run}
+    """Trigger a pipeline run and return the result."""
+    try:
+        result = await run_pipeline(dry_run=dry_run)
+        return {"status": "completed", "dry_run": dry_run, **result}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 # ---------------------------------------------------------------------------

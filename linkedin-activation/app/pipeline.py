@@ -21,7 +21,7 @@ from app.slack_bot import post_approval, post_run_summary
 RATE_LIMIT_DELAY = 3  # seconds between LinkedIn API calls
 
 
-async def run_pipeline(dry_run: bool = False):
+async def run_pipeline(dry_run: bool = False) -> dict:
     """Full pipeline: detect → enrich → attio → draft → slack."""
     errors: list[str] = []
     new_count = 0
@@ -33,7 +33,7 @@ async def run_pipeline(dry_run: bool = False):
     except Exception as e:
         errors.append(f"LinkedIn auth failed: {e}")
         post_run_summary(0, errors, dry_run, slack, SLACK_CHANNEL)
-        return
+        return {"new_count": 0, "errors": errors}
 
     # Detect new connections
     try:
@@ -44,11 +44,11 @@ async def run_pipeline(dry_run: bool = False):
     except Exception as e:
         errors.append(f"Connection detection failed: {e}")
         post_run_summary(0, errors, dry_run, slack, SLACK_CHANNEL)
-        return
+        return {"new_count": 0, "errors": errors}
 
     if not new:
         post_run_summary(0, errors, dry_run, slack, SLACK_CHANNEL)
-        return
+        return {"new_count": 0, "errors": errors}
 
     # Process each new connection
     for conn_data in new:
@@ -87,6 +87,7 @@ async def run_pipeline(dry_run: bool = False):
         time.sleep(RATE_LIMIT_DELAY)
 
     post_run_summary(new_count, errors, dry_run, slack, SLACK_CHANNEL)
+    return {"new_count": new_count, "errors": errors}
 
 
 def main():
@@ -94,7 +95,6 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Run without sending to Slack")
     args = parser.parse_args()
 
-    db.ensure_table()
     asyncio.run(run_pipeline(dry_run=args.dry_run))
 
 
