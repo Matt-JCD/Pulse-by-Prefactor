@@ -11,6 +11,7 @@ const LOG_KEY = "check_log";
 const VIEWER_URN_KEY = "viewer_profile_urn";
 const BASELINE_KEY = "connection_baseline_initialized";
 const BASELINE_AT_KEY = "connection_baseline_seeded_at";
+const LINKEDIN_OPEN_CHECK_KEY = "last_linkedin_open_check_day";
 
 async function getLinkedInCookies() {
   const cookies = await chrome.cookies.getAll({ domain: ".linkedin.com" });
@@ -185,6 +186,29 @@ async function addLog(status, message) {
     message,
   });
   await chrome.storage.local.set({ [LOG_KEY]: logs.slice(0, 50) });
+}
+
+function isLinkedInUrl(url = "") {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "www.linkedin.com" || parsed.hostname.endsWith(".linkedin.com");
+  } catch {
+    return false;
+  }
+}
+
+async function maybeRunCheckOnLinkedInOpen(url) {
+  if (!isLinkedInUrl(url)) return;
+
+  const stored = await chrome.storage.local.get(LINKEDIN_OPEN_CHECK_KEY);
+  const today = new Date().toISOString().slice(0, 10);
+  if (stored[LINKEDIN_OPEN_CHECK_KEY] === today) {
+    return;
+  }
+
+  await chrome.storage.local.set({ [LINKEDIN_OPEN_CHECK_KEY]: today });
+  console.log("[LinkedIn Detector] First LinkedIn open today - running connection check");
+  checkForNewConnections();
 }
 
 async function checkPendingSends() {
@@ -396,6 +420,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "check-pending-sends") checkPendingSends();
 });
 
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") return;
+  maybeRunCheckOnLinkedInOpen(tab.url);
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "check-now") {
     checkForNewConnections().then(sendResponse);
@@ -417,7 +446,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.action === "reset") {
     chrome.storage.local
-      .remove([STORAGE_KEY, LOG_KEY, VIEWER_URN_KEY, BASELINE_KEY, BASELINE_AT_KEY])
+      .remove([
+        STORAGE_KEY,
+        LOG_KEY,
+        VIEWER_URN_KEY,
+        BASELINE_KEY,
+        BASELINE_AT_KEY,
+        LINKEDIN_OPEN_CHECK_KEY,
+      ])
       .then(() => {
       sendResponse({ ok: true });
     });
