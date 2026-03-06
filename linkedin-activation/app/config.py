@@ -4,21 +4,30 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _require(key: str) -> str:
-    val = os.getenv(key)
-    if not val:
-        raise RuntimeError(f"Missing required env var: {key}")
-    return val
+def _get(key: str, default: str = "") -> str:
+    return os.getenv(key, default).strip()
 
 
-LI_EMAIL = os.getenv("LI_EMAIL", "")
-LI_PASSWORD = os.getenv("LI_PASSWORD", "")
-LI_AT = os.getenv("LI_AT", "")
-LI_JSESSIONID = os.getenv("LI_JSESSIONID", "")
-ANTHROPIC_API_KEY = _require("ANTHROPIC_API_KEY")
-ATTIO_API_KEY = _require("ATTIO_API_KEY")
-SLACK_BOT_TOKEN = _require("SLACK_BOT_TOKEN")
-SLACK_SIGNING_SECRET = _require("SLACK_SIGNING_SECRET")
-SLACK_CHANNEL = _require("SLACK_CHANNEL")
-SUPABASE_URL = _require("SUPABASE_URL")
-SUPABASE_KEY = _require("SUPABASE_KEY")
+def require_env_vars(*keys: str) -> None:
+    missing = [key for key in keys if not _get(key)]
+    if missing:
+        raise RuntimeError(f"Missing required env var(s): {', '.join(missing)}")
+
+
+def require_linkedin_credentials() -> None:
+    has_password_auth = bool(LI_EMAIL and LI_PASSWORD)
+    if not has_password_auth:
+        raise RuntimeError("Missing LinkedIn credentials: set LI_EMAIL+LI_PASSWORD")
+
+
+LI_EMAIL = _get("LI_EMAIL")
+LI_PASSWORD = _get("LI_PASSWORD")
+LI_AT = _get("LI_AT")
+LI_JSESSIONID = _get("LI_JSESSIONID")
+ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY")
+ATTIO_API_KEY = _get("ATTIO_API_KEY")
+SLACK_BOT_TOKEN = _get("SLACK_BOT_TOKEN")
+SLACK_SIGNING_SECRET = _get("SLACK_SIGNING_SECRET")
+SLACK_CHANNEL = _get("SLACK_CHANNEL")
+SUPABASE_URL = _get("SUPABASE_URL")
+SUPABASE_KEY = _get("SUPABASE_KEY")

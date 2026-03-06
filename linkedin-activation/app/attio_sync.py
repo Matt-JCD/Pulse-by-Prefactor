@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 ATTIO_API = "https://api.attio.com/v2"
+ATTIO_TIMEOUT = httpx.Timeout(20.0, connect=10.0)
+logger = logging.getLogger(__name__)
 
 
 def _headers(api_key: str) -> dict:
@@ -43,7 +47,8 @@ async def upsert_person(enrichment: dict, api_key: str) -> str:
         if handle:
             values["twitter"] = [handle]
 
-    async with httpx.AsyncClient() as http:
+    logger.info("Upserting Attio person for LinkedIn profile %s", public_id or "<unknown>")
+    async with httpx.AsyncClient(timeout=ATTIO_TIMEOUT) as http:
         resp = await http.put(
             f"{ATTIO_API}/objects/people/records",
             json={"data": {"values": values}},
@@ -56,7 +61,8 @@ async def upsert_person(enrichment: dict, api_key: str) -> str:
 
 async def add_sent_note(record_id: str, message: str, api_key: str):
     """Add a note to the person record after sending the LinkedIn message."""
-    async with httpx.AsyncClient() as http:
+    logger.info("Adding Attio note to record %s", record_id)
+    async with httpx.AsyncClient(timeout=ATTIO_TIMEOUT) as http:
         resp = await http.post(
             f"{ATTIO_API}/notes",
             json={

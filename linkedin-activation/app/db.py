@@ -5,7 +5,7 @@ from typing import Optional
 
 from supabase import create_client, Client
 
-from app.config import SUPABASE_URL, SUPABASE_KEY
+from app.config import SUPABASE_URL, SUPABASE_KEY, require_env_vars
 
 TABLE = "linkedin_connections"
 
@@ -15,6 +15,7 @@ _client: Optional[Client] = None
 def get_db() -> Client:
     global _client
     if _client is None:
+        require_env_vars("SUPABASE_URL", "SUPABASE_KEY")
         _client = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _client
 

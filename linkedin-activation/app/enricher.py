@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from linkedin_api import Linkedin
+
+logger = logging.getLogger(__name__)
 
 
 def enrich_profile(client: Linkedin, public_identifier: str) -> dict:
@@ -8,6 +12,7 @@ def enrich_profile(client: Linkedin, public_identifier: str) -> dict:
     Full profile data for a 1st-degree connection.
     They're connected, so Voyager returns everything.
     """
+    logger.info("Enriching LinkedIn profile %s", public_identifier)
     profile = client.get_profile(public_identifier)
     contact_info = client.get_profile_contact_info(public_identifier)
 
@@ -15,7 +20,7 @@ def enrich_profile(client: Linkedin, public_identifier: str) -> dict:
     try:
         posts = client.get_profile_posts(public_identifier, post_count=5)
     except Exception:
-        pass
+        logger.exception("Fetching LinkedIn posts failed for %s", public_identifier)
 
     return {
         "profile": profile,

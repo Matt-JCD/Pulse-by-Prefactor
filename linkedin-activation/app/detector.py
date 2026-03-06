@@ -13,14 +13,14 @@ logger = logging.getLogger(__name__)
 def get_recent_connections(client: Linkedin) -> list[dict]:
     """
     Fetch ~100 most recent connections via Voyager API.
-    Sorted by recency — only care about new ones since last run.
+    Sorted by recency; only care about new ones since last run.
     """
     my_urn = get_my_urn(client)
-    print(f"[DEBUG] Fetching connections for URN: {my_urn}", flush=True)
+    logger.info("Fetching LinkedIn connections for URN %s", my_urn)
     connections = client.get_profile_connections(urn_id=my_urn)
-    print(f"[DEBUG] get_profile_connections returned {len(connections)} items", flush=True)
+    logger.info("LinkedIn returned %s connection(s)", len(connections))
     if connections:
-        print(f"[DEBUG] First connection keys: {list(connections[0].keys())}", flush=True)
+        logger.debug("First connection keys: %s", list(connections[0].keys()))
     return connections
 
 
