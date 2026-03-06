@@ -109,7 +109,8 @@ async function fetchXEngagement(post: ComposerPost): Promise<EngagementStats> {
     );
 
     if (!res.ok) {
-      console.error(`[engagement] X API ${res.status} for post #${post.id}`);
+      const body = await res.text();
+      console.error(`[engagement] X API ${res.status} for post #${post.id}: ${body}`);
       return ZERO_STATS;
     }
 
@@ -125,6 +126,7 @@ async function fetchXEngagement(post: ComposerPost): Promise<EngagementStats> {
     };
 
     const m = data.data?.public_metrics;
+    console.log(`[engagement] X post #${post.id} metrics:`, JSON.stringify(m || 'no public_metrics'));
     return {
       impressions: m?.impression_count ?? 0,
       likes: m?.like_count ?? 0,
