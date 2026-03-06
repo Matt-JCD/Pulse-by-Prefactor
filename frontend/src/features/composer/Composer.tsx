@@ -24,11 +24,11 @@ export function Composer({ posts, stats, topics, history }: Props) {
       {/* Review queue: drafts + scheduled posts */}
       <PostQueue posts={posts} />
 
-      {/* Draft from today's intelligence topics */}
-      <TopicDraftPicker topics={topics} />
-
       {/* Status tracking: published, failed, rejected */}
       <PostHistory posts={history} />
+
+      {/* Draft from today's intelligence topics */}
+      <TopicDraftPicker topics={topics} />
     </div>
   );
 }
