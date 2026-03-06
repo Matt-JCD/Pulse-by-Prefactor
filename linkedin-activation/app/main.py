@@ -162,11 +162,15 @@ async def slack_events(request: Request):
                     asyncio.create_task(process_approve_action(connection_id))
 
                 elif action_id == "skip_message":
-                    await asyncio.to_thread(handle_skip, connection_id, slack, SLACK_CHANNEL)
+                    asyncio.create_task(
+                        asyncio.to_thread(handle_skip, connection_id, slack, SLACK_CHANNEL)
+                    )
 
                 elif action_id == "edit_message":
                     trigger_id = payload["trigger_id"]
-                    await asyncio.to_thread(handle_edit, connection_id, trigger_id, slack)
+                    asyncio.create_task(
+                        asyncio.to_thread(handle_edit, connection_id, trigger_id, slack)
+                    )
 
         elif payload_type == "view_submission":
             view = payload["view"]
