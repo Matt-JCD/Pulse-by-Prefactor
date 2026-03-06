@@ -298,6 +298,15 @@ async function checkForNewConnections() {
   const stored = await chrome.storage.local.get(STORAGE_KEY);
   const knownUrns = new Set(stored[STORAGE_KEY] || []);
 
+  // First run: seed the known list without sending anything
+  if (knownUrns.size === 0) {
+    console.log(`[LinkedIn Detector] First run — seeding ${allConnections.length} existing connections`);
+    const allUrns = allConnections.map((c) => c.linkedin_urn);
+    await chrome.storage.local.set({ [STORAGE_KEY]: allUrns });
+    await addLog("ok", `First run: seeded ${allConnections.length} existing connections`);
+    return { checked: allConnections.length, new: 0, seeded: true };
+  }
+
   // Find new ones
   const newConnections = allConnections.filter((c) => !knownUrns.has(c.linkedin_urn));
 

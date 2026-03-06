@@ -106,6 +106,58 @@ async def webhook_new_connections(request: Request):
         return {"status": "error", "error": str(e)}
 
 
+@app.post("/retry-enriched")
+async def retry_enriched(limit: int = Query(10, ge=1, le=50)):
+    """Re-process connections stuck at 'enriched' (no draft). Drafts + posts to Slack."""
+    from app.config import ANTHROPIC_API_KEY, SLACK_BOT_TOKEN, SLACK_CHANNEL
+    from app.drafter import draft_message
+    from app.slack_bot import post_approval
+
+    rows = await asyncio.to_thread(db.get_connections, "enriched", limit)
+    if not rows:
+        return {"status": "ok", "message": "No enriched connections to retry", "processed": 0}
+
+    slack = WebClient(token=SLACK_BOT_TOKEN)
+    processed = 0
+    errors = []
+
+    for row in rows:
+        name = f"{row['first_name']} {row['last_name']}"
+        try:
+            # Build minimal enrichment from DB fields
+            enrichment = {
+                "profile": {
+                    "firstName": row.get("first_name", ""),
+                    "lastName": row.get("last_name", ""),
+                    "headline": row.get("headline", ""),
+                    "publicIdentifier": row.get("public_identifier", ""),
+                    "locationName": "",
+                    "industryName": "",
+                    "summary": "",
+                    "experience": [],
+                },
+                "contact_info": {},
+                "recent_posts": [],
+            }
+
+            draft = await asyncio.wait_for(
+                asyncio.to_thread(draft_message, enrichment, ANTHROPIC_API_KEY),
+                timeout=60,
+            )
+            await asyncio.to_thread(db.set_draft, row["id"], draft)
+
+            conn = await asyncio.to_thread(db.get_connection, row["id"])
+            ts = await asyncio.to_thread(post_approval, conn, slack, SLACK_CHANNEL)
+            await asyncio.to_thread(db.set_slack_ts, row["id"], ts)
+
+            processed += 1
+        except Exception as e:
+            logger.exception("Retry failed for %s", name)
+            errors.append(f"{name}: {e}")
+
+    return {"status": "ok", "processed": processed, "errors": errors}
+
+
 @app.get("/pending-sends")
 async def pending_sends():
     """Chrome extension polls this to find messages it needs to send."""
