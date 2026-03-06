@@ -16,11 +16,11 @@ def get_recent_connections(client: Linkedin) -> list[dict]:
     Sorted by recency — only care about new ones since last run.
     """
     my_urn = get_my_urn(client)
-    logger.info(f"Fetching connections for URN: {my_urn}")
+    print(f"[DEBUG] Fetching connections for URN: {my_urn}", flush=True)
     connections = client.get_profile_connections(urn_id=my_urn)
-    logger.info(f"get_profile_connections returned {len(connections)} items")
+    print(f"[DEBUG] get_profile_connections returned {len(connections)} items", flush=True)
     if connections:
-        logger.info(f"First connection keys: {list(connections[0].keys())}")
+        print(f"[DEBUG] First connection keys: {list(connections[0].keys())}", flush=True)
     return connections
 
 
