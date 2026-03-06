@@ -11,8 +11,9 @@ def _require(key: str) -> str:
     return val
 
 
-LI_EMAIL = _require("LI_EMAIL")
-LI_PASSWORD = _require("LI_PASSWORD")
+LI_EMAIL = os.getenv("LI_EMAIL", "")
+LI_PASSWORD = os.getenv("LI_PASSWORD", "")
+LI_AT = os.getenv("LI_AT", "")
 ANTHROPIC_API_KEY = _require("ANTHROPIC_API_KEY")
 ATTIO_API_KEY = _require("ATTIO_API_KEY")
 SLACK_BOT_TOKEN = _require("SLACK_BOT_TOKEN")
