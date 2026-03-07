@@ -214,6 +214,22 @@ class TestDetectionLauncher:
 
     @patch("app.detection_launcher.launch_connections_export")
     @patch("app.detection_launcher.db")
+    def test_uses_manual_override_date(self, mock_db, mock_export):
+        mock_db.get_outreach_by_status.return_value = []
+        mock_db.get_db.return_value.table.return_value.select.return_value\
+            .order.return_value.limit.return_value.execute.return_value.data = [
+            {"connection_since": "2026-03-07T00:00:00Z"}
+        ]
+        mock_db.OUTREACH_TABLE = "linkedin_outreach"
+        mock_export.return_value = {"containerId": "c-1"}
+
+        from app.detection_launcher import launch_detection
+        launch_detection("01.01.2026")
+
+        mock_export.assert_called_once_with("01-01-2026")
+
+    @patch("app.detection_launcher.launch_connections_export")
+    @patch("app.detection_launcher.db")
     def test_uses_latest_connection_since(self, mock_db, mock_export):
         mock_db.get_outreach_by_status.return_value = []
         mock_db.get_db.return_value.table.return_value.select.return_value\

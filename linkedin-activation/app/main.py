@@ -95,10 +95,10 @@ async def list_connections(
 # ---------------------------------------------------------------------------
 
 @app.post("/jobs/detect-new-connections")
-async def detect_new_connections_job():
+async def detect_new_connections_job(date_after: Optional[str] = Query(None)):
     """Cron-triggered. Launches PB connections export agent."""
     try:
-        result = await asyncio.to_thread(launch_detection)
+        result = await asyncio.to_thread(launch_detection, date_after)
         return {"status": "launched", **result}
     except Exception as e:
         logger.exception("[outreach:detection] Detection launch failed")

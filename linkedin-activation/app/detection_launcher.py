@@ -10,7 +10,17 @@ from app.phantombuster import expected_webhook_url, format_date_for_pb, launch_c
 logger = logging.getLogger(__name__)
 
 
-def launch_detection() -> dict:
+def _parse_override_date(raw_value: str) -> datetime:
+    """Accept a few operator-friendly date formats for manual backfills."""
+    for fmt in ("%m-%d-%Y", "%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw_value.strip(), fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise ValueError("Unsupported date format. Use MM-DD-YYYY, YYYY-MM-DD, or DD.MM.YYYY.")
+
+
+def launch_detection(date_after_override: str | None = None) -> dict:
     """
     Launch PB connections export agent.
     Uses the most recent connection_since date from the outreach table,
@@ -36,7 +46,14 @@ def launch_detection() -> dict:
         except (ValueError, TypeError):
             latest_date = None
 
-    if latest_date is None:
+    if date_after_override:
+        latest_date = _parse_override_date(date_after_override)
+        logger.info(
+            "[outreach:detection] Using manual date override=%s parsed=%s",
+            date_after_override,
+            latest_date.isoformat(),
+        )
+    elif latest_date is None:
         latest_date = datetime.now(timezone.utc) - timedelta(days=7)
 
     date_str = format_date_for_pb(latest_date)
