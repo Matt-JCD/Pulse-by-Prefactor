@@ -161,20 +161,32 @@ def process_pb_webhook(payload: dict) -> None:
     exit_code = payload.get("exitCode")
     container_id = payload.get("containerId", "?")
 
-    if agent_id == PB_CONNECTIONS_AGENT_ID:
-        if exit_code == 0:
-            handle_connections_result(payload)
-        else:
-            logger.error(
-                "Connections agent failed (container %s): exit %s — %s",
-                container_id, exit_code, payload.get("exitMessage"),
-            )
+    logger.info(
+        "[webhook] Processing PB webhook: agentId=%s exitCode=%s(%s) containerId=%s",
+        agent_id, exit_code, type(exit_code).__name__, container_id,
+    )
 
-    elif agent_id == PB_MESSAGE_SENDER_AGENT_ID:
-        if exit_code == 0:
-            handle_send_success(payload)
-        else:
-            handle_send_failure(payload)
+    try:
+        # PB may send exitCode as string or int
+        is_success = str(exit_code) == "0"
 
-    else:
-        logger.warning("Unknown agentId in PB webhook: %s", agent_id)
+        if agent_id == PB_CONNECTIONS_AGENT_ID:
+            if is_success:
+                handle_connections_result(payload)
+            else:
+                logger.error(
+                    "Connections agent failed (container %s): exit %s — %s",
+                    container_id, exit_code, payload.get("exitMessage"),
+                )
+
+        elif agent_id == PB_MESSAGE_SENDER_AGENT_ID:
+            if is_success:
+                handle_send_success(payload)
+            else:
+                handle_send_failure(payload)
+
+        else:
+            logger.warning("Unknown agentId in PB webhook: %s keys=%s", agent_id, list(payload.keys()))
+
+    except Exception:
+        logger.exception("[webhook] process_pb_webhook crashed for container %s", container_id)

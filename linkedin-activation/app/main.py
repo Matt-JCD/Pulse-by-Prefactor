@@ -111,6 +111,33 @@ async def draft_outreach_job():
     return {"drafted": count}
 
 
+@app.post("/jobs/enrich-and-redraft")
+async def enrich_and_redraft_job(
+    limit: int = Query(5, ge=1, le=50),
+    status: str = Query("detected"),
+):
+    """Re-enrich and re-draft outreach rows. Use status=awaiting_review to redo existing drafts."""
+    from app.drafter import enrich_and_store, generate_outreach_draft
+    from app.state_machine import transition_status
+
+    supabase = db.get_db()
+    rows = await asyncio.to_thread(db.get_outreach_by_status, status, limit)
+    results = {"enriched": 0, "drafted": 0, "errors": []}
+
+    for row in rows:
+        try:
+            row = await asyncio.to_thread(enrich_and_store, supabase, row["id"], row)
+            results["enriched"] += 1
+
+            draft_text = await asyncio.to_thread(generate_outreach_draft, row)
+            await asyncio.to_thread(db.update_outreach, row["id"], {"draft_message": draft_text})
+            results["drafted"] += 1
+        except Exception as e:
+            results["errors"].append(f"{row.get('full_name')}: {str(e)[:100]}")
+
+    return results
+
+
 @app.post("/jobs/launch-approved-sends")
 async def launch_approved_sends_job():
     """Cron-triggered. Launches PB message sender for approved outreach rows."""
@@ -153,6 +180,7 @@ async def phantombuster_webhook(request: Request, background_tasks: BackgroundTa
         return Response(status_code=401, content="Invalid secret")
 
     payload = await request.json()
+    logger.info("[webhook] PB webhook received: %s", {k: v for k, v in payload.items() if k != "output"})
     background_tasks.add_task(process_pb_webhook, payload)
     return {"status": "accepted"}
 
