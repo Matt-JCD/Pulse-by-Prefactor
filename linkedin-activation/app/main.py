@@ -106,11 +106,11 @@ async def detect_new_connections_job(date_after: Optional[str] = Query(None)):
 
 
 @app.post("/jobs/draft-outreach")
-async def draft_outreach_job():
-    """Cron-triggered. Drafts messages for all detected connections."""
+async def draft_outreach_job(limit: int = Query(25, ge=1, le=200)):
+    """Cron-triggered. Drafts messages for detected connections in batches."""
     supabase = db.get_db()
-    count = await asyncio.to_thread(draft_all_detected, supabase)
-    return {"drafted": count}
+    count = await asyncio.to_thread(draft_all_detected, supabase, limit)
+    return {"drafted": count, "limit": limit}
 
 
 @app.post("/jobs/enrich-and-redraft")

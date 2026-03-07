@@ -100,7 +100,7 @@ class TestGenerateOutreachDraft:
 
     @patch("app.drafter.ANTHROPIC_API_KEY", "test-key")
     @patch("app.drafter.anthropic.Anthropic")
-    def test_uses_haiku_model(self, mock_cls):
+    def test_uses_sonnet_model(self, mock_cls):
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
         mock_client.messages.create.return_value = _mock_anthropic_response("Hi!")
@@ -108,8 +108,8 @@ class TestGenerateOutreachDraft:
         generate_outreach_draft(SAMPLE_ROW)
 
         create_call = mock_client.messages.create.call_args
-        assert create_call.kwargs["model"] == "claude-haiku-4-5-20251001"
-        assert create_call.kwargs["max_tokens"] == 200
+        assert create_call.kwargs["model"] == "claude-sonnet-4-20250514"
+        assert create_call.kwargs["max_tokens"] == 400
 
     @patch("app.drafter.ANTHROPIC_API_KEY", "test-key")
     @patch("app.drafter.anthropic.Anthropic")
@@ -206,8 +206,22 @@ class TestDraftAllDetected:
 
         assert count == 2
         assert mock_draft.call_count == 2
+        mock_db.get_outreach_by_status.assert_called_once_with("detected", limit=100)
         mock_draft.assert_any_call(mock_supabase, "id-1")
         mock_draft.assert_any_call(mock_supabase, "id-2")
+
+    @patch("app.drafter.draft_and_update_outreach")
+    @patch("app.drafter.db")
+    def test_respects_limit(self, mock_db, mock_draft):
+        mock_db.get_outreach_by_status.return_value = [
+            {**SAMPLE_ROW, "id": "id-1"},
+        ]
+        mock_supabase = MagicMock()
+
+        count = draft_all_detected(mock_supabase, limit=25)
+
+        assert count == 1
+        mock_db.get_outreach_by_status.assert_called_once_with("detected", limit=25)
 
     @patch("app.drafter.draft_and_update_outreach")
     @patch("app.drafter.db")

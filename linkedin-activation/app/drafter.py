@@ -255,9 +255,9 @@ def draft_and_update_outreach(supabase_client: Client, outreach_id: str) -> None
     post_outreach_approval(supabase_client, updated_row)
 
 
-def draft_all_detected(supabase_client: Client) -> int:
-    """Draft messages for all detected outreach rows. Returns count drafted."""
-    rows = db.get_outreach_by_status("detected")
+def draft_all_detected(supabase_client: Client, limit: int = 100) -> int:
+    """Draft messages for detected outreach rows up to the provided limit."""
+    rows = db.get_outreach_by_status("detected", limit=limit)
     count = 0
     for row in rows:
         try:
