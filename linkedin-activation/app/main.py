@@ -34,6 +34,8 @@ from app.slack_bot import (
     handle_outreach_reject,
 )
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
 app = FastAPI(title="LinkedIn Activation Engine")
 logger = logging.getLogger(__name__)
 
