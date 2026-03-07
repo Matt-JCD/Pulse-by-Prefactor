@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.phantombuster_webhook import (
     _extract_webhook_metadata,
+    _normalized_payload,
     handle_connections_result,
     handle_send_success,
     handle_send_failure,
@@ -94,6 +95,23 @@ class TestHelpers:
         assert meta["agent_name"] == "LinkedIn Connections Export"
         assert meta["container_id"] == "container-nested"
         assert meta["exit_code"] == "0"
+
+    def test_normalized_payload_promotes_nested_keys(self):
+        payload = {
+            "event": "agent.finished",
+            "data": {
+                "agentId": "conn-agent-123",
+                "containerId": "container-nested",
+                "exitCode": "0",
+            },
+        }
+
+        meta = _extract_webhook_metadata(payload)
+        normalized = _normalized_payload(payload, meta)
+
+        assert normalized["agentId"] == "conn-agent-123"
+        assert normalized["containerId"] == "container-nested"
+        assert normalized["exitCode"] == "0"
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +243,12 @@ class TestProcessWebhookRouting:
 
         process_pb_webhook(payload)
 
-        mock_handle.assert_called_once_with(payload)
+        called_payload = mock_handle.call_args.args[0]
+        assert called_payload["event"] == "agent.finished"
+        assert called_payload["data"]["agentId"] == "conn-agent-123"
+        assert called_payload["agentId"] == "conn-agent-123"
+        assert called_payload["containerId"] == "container-nested"
+        assert called_payload["exitCode"] == "0"
 
 
 # ---------------------------------------------------------------------------

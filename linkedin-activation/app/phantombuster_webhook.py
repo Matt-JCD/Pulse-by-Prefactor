@@ -54,6 +54,22 @@ def _extract_webhook_metadata(payload: dict) -> dict[str, object]:
     }
 
 
+def _normalized_payload(payload: dict, meta: dict[str, object]) -> dict:
+    """Ensure top-level keys exist for downstream handlers."""
+    normalized = dict(payload)
+    if meta["agent_id"] is not None:
+        normalized.setdefault("agentId", meta["agent_id"])
+    if meta["agent_name"] is not None:
+        normalized.setdefault("agentName", meta["agent_name"])
+    if meta["container_id"] is not None:
+        normalized.setdefault("containerId", str(meta["container_id"]))
+    if meta["exit_code"] is not None:
+        normalized.setdefault("exitCode", meta["exit_code"])
+    if meta["exit_message"] is not None:
+        normalized.setdefault("exitMessage", meta["exit_message"])
+    return normalized
+
+
 def _public_identifier_from_url(url: str) -> str:
     """Extract public identifier from a LinkedIn profile URL."""
     return url.rstrip("/").split("/")[-1]
@@ -68,19 +84,48 @@ def handle_connections_result(payload: dict) -> dict:
     container_id = payload["containerId"]
     agent_id = payload["agentId"]
 
+    logger.info(
+        "[outreach:detection] Starting webhook processing for agentId=%s containerId=%s",
+        agent_id,
+        container_id,
+    )
+
     agent_info = fetch_agent_info(agent_id)
+    logger.info(
+        "[outreach:detection] Fetched agent info for agentId=%s keys=%s",
+        agent_id,
+        sorted(agent_info.keys()),
+    )
     s3_folder = agent_info["s3Folder"]
     org_s3_folder = agent_info["orgS3Folder"]
 
     csv_text = download_result_csv(s3_folder, org_s3_folder)
+    logger.info(
+        "[outreach:detection] Downloaded result CSV for container %s (%d chars)",
+        container_id,
+        len(csv_text),
+    )
     reader = csv.DictReader(io.StringIO(csv_text))
+    logger.info(
+        "[outreach:detection] Parsed CSV headers for container %s: %s",
+        container_id,
+        reader.fieldnames or [],
+    )
 
     new_ids: list[str] = []
     skipped = 0
+    processed = 0
 
     for row in reader:
+        processed += 1
         profile_url = row.get("profileUrl", "").strip()
         if not profile_url:
+            logger.info(
+                "[outreach:detection] Skipping row %d for container %s: missing profileUrl keys=%s",
+                processed,
+                container_id,
+                sorted(row.keys()),
+            )
             continue
 
         headline = row.get("title", "")
@@ -96,16 +141,33 @@ def handle_connections_result(payload: dict) -> dict:
             "status": "detected",
             "pb_connections_container_id": container_id,
         }
-        result = db.upsert_outreach_connection(data)
+        try:
+            result = db.upsert_outreach_connection(data)
+        except Exception:
+            logger.exception(
+                "[outreach:detection] Upsert failed for container %s row %d profile=%s",
+                container_id,
+                processed,
+                profile_url,
+            )
+            raise
 
         if result.get("status") == "detected" and result.get("pb_connections_container_id") == container_id:
             new_ids.append(result["id"])
         else:
             skipped += 1
+            logger.info(
+                "[outreach:detection] Row %d for container %s treated as existing/skipped status=%s existing_container=%s profile=%s",
+                processed,
+                container_id,
+                result.get("status"),
+                result.get("pb_connections_container_id"),
+                profile_url,
+            )
 
     logger.info(
-        "[outreach:detection] Webhook processed: %d new connections, %d skipped (container %s)",
-        len(new_ids), skipped, container_id,
+        "[outreach:detection] Webhook processed: %d rows seen, %d new connections, %d skipped (container %s)",
+        processed, len(new_ids), skipped, container_id,
     )
     return {"new_ids": new_ids, "skipped": skipped}
 
@@ -187,6 +249,7 @@ def _update_slack_message(row: dict, status_text: str) -> None:
 def process_pb_webhook(payload: dict) -> None:
     """Route a PhantomBuster webhook payload to the correct handler."""
     meta = _extract_webhook_metadata(payload)
+    payload = _normalized_payload(payload, meta)
     agent_id = meta["agent_id"]
     exit_code = meta["exit_code"]
     container_id = str(meta["container_id"])
