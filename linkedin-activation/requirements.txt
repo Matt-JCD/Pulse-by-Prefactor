@@ -1,4 +1,3 @@
-linkedin-api>=2.3.0
 anthropic
 fastapi
 uvicorn
@@ -6,3 +5,5 @@ httpx
 slack-sdk
 supabase
 python-dotenv
+pytest
+pytest-asyncio

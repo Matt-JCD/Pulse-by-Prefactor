@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 import anthropic
+from supabase import Client
+
+from app import db
+from app.config import ANTHROPIC_API_KEY
+from app.state_machine import transition_status
+
+logger = logging.getLogger(__name__)
 
 SYSTEM = """You are drafting LinkedIn connection messages as Matt Doughty, CEO of Prefactor.
 Australian-based (English background), direct, no-bullshit, hates corporate speak.
@@ -84,3 +93,99 @@ Rules:
     text = resp.content[0].text.strip().replace("\n", " ")
     text = " ".join(text.split())
     return text[:200]
+
+
+# ---------------------------------------------------------------------------
+# Outreach drafting (linkedin_outreach table)
+# ---------------------------------------------------------------------------
+
+OUTREACH_SYSTEM = (
+    "You are writing a short, warm LinkedIn welcome message from Matt Doughty, "
+    "CEO & Co-founder of Prefactor (AI agent governance platform). This is for "
+    "someone who just connected with Matt on LinkedIn.\n\n"
+    "Rules:\n"
+    "- Keep it under 300 characters\n"
+    "- Be warm but not salesy\n"
+    "- Reference something specific about them if possible (headline, company, role)\n"
+    "- Don't pitch Prefactor unless there's a clear fit\n"
+    "- Don't use corporate speak or cliches\n"
+    "- Sound like a real person, not a bot\n"
+    "- End with something that invites a natural reply\n"
+    "- Never use emojis\n"
+    "- One paragraph max, no line breaks"
+)
+
+
+def generate_outreach_draft(outreach_row: dict) -> str:
+    """Generate a personalised welcome message for a new LinkedIn connection."""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    full_name = outreach_row.get("full_name") or "Unknown"
+    headline = outreach_row.get("headline") or "N/A"
+    profile_url = outreach_row.get("linkedin_profile_url", "")
+
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=200,
+        system=OUTREACH_SYSTEM,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"New connection: {full_name}\n"
+                    f"Headline: {headline}\n"
+                    f"Profile: {profile_url}\n\n"
+                    "Write a welcome message."
+                ),
+            }
+        ],
+    )
+    text = resp.content[0].text.strip().replace("\n", " ")
+    text = " ".join(text.split())
+    return text[:300]
+
+
+def draft_and_update_outreach(supabase_client: Client, outreach_id: str) -> None:
+    """Fetch row, generate draft, transition detected->drafted->awaiting_review, post Slack."""
+    from app.slack_bot import post_outreach_approval
+
+    row = (
+        supabase_client.table("linkedin_outreach")
+        .select("*")
+        .eq("id", outreach_id)
+        .single()
+        .execute()
+    ).data
+
+    if row["status"] != "detected":
+        logger.warning("Skipping draft for %s — status is %s", outreach_id, row["status"])
+        return
+
+    draft_text = generate_outreach_draft(row)
+    logger.info("[outreach:draft] Draft generated for %s (%d chars)", row.get("full_name"), len(draft_text))
+    db.update_outreach(outreach_id, {"draft_message": draft_text})
+
+    transition_status(supabase_client, outreach_id, "drafted")
+    transition_status(supabase_client, outreach_id, "awaiting_review")
+
+    updated_row = (
+        supabase_client.table("linkedin_outreach")
+        .select("*")
+        .eq("id", outreach_id)
+        .single()
+        .execute()
+    ).data
+
+    post_outreach_approval(supabase_client, updated_row)
+
+
+def draft_all_detected(supabase_client: Client) -> int:
+    """Draft messages for all detected outreach rows. Returns count drafted."""
+    rows = db.get_outreach_by_status("detected")
+    count = 0
+    for row in rows:
+        try:
+            draft_and_update_outreach(supabase_client, row["id"])
+            count += 1
+        except Exception:
+            logger.exception("Failed to draft outreach for %s", row.get("id"))
+    return count

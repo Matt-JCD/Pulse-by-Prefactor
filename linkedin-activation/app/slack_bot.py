@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timezone
+
 from slack_sdk import WebClient
+from supabase import Client
 
 from app import db
+from app.config import OUTREACH_SLACK_CHANNEL, SLACK_BOT_TOKEN
+from app.state_machine import transition_status
+
+logger = logging.getLogger(__name__)
 
 
+# DEPRECATED — old linkedin_connections table functions. Remove in future cleanup.
 def build_approval_block(conn: dict) -> list:
     """Build Slack Block Kit message for connection approval."""
     attio_link = ""
@@ -170,3 +179,170 @@ def handle_edit_submit(connection_id: str, new_draft: str, slack: WebClient, cha
             text=f"Updated draft for {conn['first_name']} {conn['last_name']}",
         )
         db.set_error(connection_id, "awaiting_review", "")
+# END DEPRECATED
+
+
+# ---------------------------------------------------------------------------
+# Outreach approval flow (linkedin_outreach table)
+# ---------------------------------------------------------------------------
+
+def build_outreach_approval_blocks(row: dict) -> list:
+    """Build Block Kit message for outreach approval."""
+    name = row.get("full_name") or f"{row.get('first_name', '')} {row.get('last_name', '')}".strip()
+    headline = row.get("headline") or ""
+    draft = row.get("draft_message") or ""
+    profile_url = row.get("linkedin_profile_url") or ""
+
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*{name}*\n{headline}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"<{profile_url}|View Profile>"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"> {draft}"},
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Approve"},
+                    "style": "primary",
+                    "action_id": "outreach_approve",
+                    "value": row["id"],
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Edit"},
+                    "action_id": "outreach_edit",
+                    "value": row["id"],
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Reject"},
+                    "style": "danger",
+                    "action_id": "outreach_reject",
+                    "value": row["id"],
+                },
+            ],
+        },
+    ]
+
+
+def build_outreach_edit_modal(outreach_id: str, current_draft: str) -> dict:
+    """Build a Slack modal for editing an outreach draft."""
+    return {
+        "type": "modal",
+        "callback_id": "outreach_edit_modal",
+        "private_metadata": outreach_id,
+        "title": {"type": "plain_text", "text": "Edit Message"},
+        "submit": {"type": "plain_text", "text": "Approve"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "outreach_draft_block",
+                "label": {"type": "plain_text", "text": "Message (max 300 chars)"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "outreach_draft_input",
+                    "initial_value": current_draft,
+                    "max_length": 300,
+                    "multiline": True,
+                },
+            }
+        ],
+    }
+
+
+def post_outreach_approval(supabase_client: Client, outreach_row: dict) -> None:
+    """Post outreach approval card to Slack and save the message timestamp."""
+    if not SLACK_BOT_TOKEN or not OUTREACH_SLACK_CHANNEL:
+        return
+
+    name = outreach_row.get("full_name") or ""
+    slack = WebClient(token=SLACK_BOT_TOKEN)
+    resp = slack.chat_postMessage(
+        channel=OUTREACH_SLACK_CHANNEL,
+        blocks=build_outreach_approval_blocks(outreach_row),
+        text=f"New outreach: {name}",
+    )
+    db.update_outreach(outreach_row["id"], {
+        "slack_message_ts": resp["ts"],
+        "slack_channel": OUTREACH_SLACK_CHANNEL,
+    })
+    logger.info("[outreach:slack] Approval card posted for %s", name)
+
+
+def update_outreach_slack_message(supabase_client: Client, outreach_row: dict, status_text: str) -> None:
+    """Replace buttons with a status line."""
+    if not SLACK_BOT_TOKEN or not outreach_row.get("slack_message_ts"):
+        return
+
+    channel = outreach_row.get("slack_channel") or OUTREACH_SLACK_CHANNEL
+    if not channel:
+        return
+
+    name = outreach_row.get("full_name") or ""
+    try:
+        slack = WebClient(token=SLACK_BOT_TOKEN)
+        slack.chat_update(
+            channel=channel,
+            ts=outreach_row["slack_message_ts"],
+            text=f"{status_text}: {name}",
+            blocks=[],
+        )
+    except Exception:
+        logger.exception("Slack outreach message update failed for %s", outreach_row.get("id"))
+
+
+def handle_outreach_approve(supabase_client: Client, outreach_id: str) -> None:
+    """Approve outreach: set approved_message, approved_at, transition to approved."""
+    row = db.get_outreach(outreach_id)
+    if not row:
+        raise RuntimeError(f"Outreach {outreach_id} not found")
+
+    db.update_outreach(outreach_id, {
+        "approved_message": row.get("draft_message"),
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+    })
+    transition_status(supabase_client, outreach_id, "approved")
+
+    updated = db.get_outreach(outreach_id)
+    update_outreach_slack_message(supabase_client, updated, "Approved by Matt")
+
+
+def handle_outreach_edit(supabase_client: Client, outreach_id: str, trigger_id: str) -> None:
+    """Open the outreach edit modal."""
+    row = db.get_outreach(outreach_id)
+    if not row:
+        raise RuntimeError(f"Outreach {outreach_id} not found")
+
+    modal = build_outreach_edit_modal(outreach_id, row.get("draft_message") or "")
+    slack = WebClient(token=SLACK_BOT_TOKEN)
+    slack.views_open(trigger_id=trigger_id, view=modal)
+
+
+def handle_outreach_edit_submit(supabase_client: Client, outreach_id: str, edited_text: str) -> None:
+    """Save edited text as approved_message, transition to approved."""
+    db.update_outreach(outreach_id, {
+        "approved_message": edited_text,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+    })
+    transition_status(supabase_client, outreach_id, "approved")
+
+    updated = db.get_outreach(outreach_id)
+    update_outreach_slack_message(supabase_client, updated, "Approved (edited)")
+
+
+def handle_outreach_reject(supabase_client: Client, outreach_id: str) -> None:
+    """Reject outreach: transition to rejected, update Slack."""
+    transition_status(supabase_client, outreach_id, "rejected")
+
+    row = db.get_outreach(outreach_id)
+    update_outreach_slack_message(supabase_client, row, "Rejected")

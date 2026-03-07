@@ -37,3 +37,47 @@ services:
       - fromService:
           name: linkedin-activation
           type: web
+
+  # Outreach pipeline cron jobs (hit FastAPI endpoints on the web service)
+  # Detection: 9am + 5pm AEST weekdays (UTC: 23:00 Sun-Thu + 07:00 Mon-Fri)
+  - type: cron
+    name: outreach-detect
+    runtime: python
+    buildCommand: echo "no build needed"
+    schedule: "0 23 * * 0-4"
+    command: curl -s -X POST https://pulse-by-prefactor-1.onrender.com/jobs/detect-new-connections
+    envVars: []
+
+  - type: cron
+    name: outreach-detect-afternoon
+    runtime: python
+    buildCommand: echo "no build needed"
+    schedule: "0 7 * * 1-5"
+    command: curl -s -X POST https://pulse-by-prefactor-1.onrender.com/jobs/detect-new-connections
+    envVars: []
+
+  # Draft: every 15 min
+  - type: cron
+    name: outreach-draft
+    runtime: python
+    buildCommand: echo "no build needed"
+    schedule: "*/15 * * * *"
+    command: curl -s -X POST https://pulse-by-prefactor-1.onrender.com/jobs/draft-outreach
+    envVars: []
+
+  # Send: every 30 min during business hours (9am-6pm AEST = 23:00-08:00 UTC)
+  - type: cron
+    name: outreach-send-evening
+    runtime: python
+    buildCommand: echo "no build needed"
+    schedule: "*/30 23 * * 0-4"
+    command: curl -s -X POST https://pulse-by-prefactor-1.onrender.com/jobs/launch-approved-sends
+    envVars: []
+
+  - type: cron
+    name: outreach-send-morning
+    runtime: python
+    buildCommand: echo "no build needed"
+    schedule: "*/30 0-8 * * 1-5"
+    command: curl -s -X POST https://pulse-by-prefactor-1.onrender.com/jobs/launch-approved-sends
+    envVars: []

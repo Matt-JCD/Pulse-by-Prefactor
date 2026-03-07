@@ -8,39 +8,40 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, Query, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from slack_sdk import WebClient
 
 from app import db
-from app.attio_sync import add_sent_note
+from app.attio_sync import sync_all_unsynced
 from app.config import (
-    ATTIO_API_KEY,
+    ADMIN_API_KEY,
+    DAILY_SEND_LIMIT,
     SLACK_BOT_TOKEN,
     SLACK_CHANNEL,
     SLACK_SIGNING_SECRET,
     require_env_vars,
 )
-from app.pipeline import run_pipeline
-from app.pipeline_webhook import persist_new_connections, process_persisted_connections
-from app.slack_bot import handle_approve, handle_edit, handle_edit_submit, handle_skip
-from app.workflow import build_enrichment_from_row, get_slack_client, process_connection
+from app.detection_launcher import launch_detection
+from app.drafter import draft_all_detected
+from app.phantombuster import validate_webhook_secret
+from app.phantombuster_webhook import process_pb_webhook
+from app.send_launcher import launch_approved_sends
+from app.slack_bot import (
+    handle_outreach_approve, handle_outreach_edit, handle_outreach_edit_submit,
+    handle_outreach_reject,
+)
 
 app = FastAPI(title="LinkedIn Activation Engine")
 logger = logging.getLogger(__name__)
 
 
-def process_approve_action(connection_id: str) -> None:
-    """Mark connection as pending_send for Chrome extension to pick up."""
-    slack = WebClient(token=SLACK_BOT_TOKEN)
-    try:
-        logger.info("Queuing send for connection %s", connection_id)
-        handle_approve(connection_id, slack, SLACK_CHANNEL)
-    except Exception:
-        logger.exception("Approve action failed for connection %s", connection_id)
-        slack.chat_postMessage(
-            channel=SLACK_CHANNEL,
-            text=f"Approval failed for connection {connection_id}. Check Render logs.",
-        )
+# ---------------------------------------------------------------------------
+# Admin auth dependency
+# ---------------------------------------------------------------------------
+
+def verify_admin_key(x_api_key: str = Header(alias="x-api-key", default="")) -> None:
+    if not ADMIN_API_KEY or not hmac.compare_digest(x_api_key, ADMIN_API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 def verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
@@ -59,6 +60,10 @@ def verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+# ---------------------------------------------------------------------------
+# Health & info
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 async def health():
     try:
@@ -72,7 +77,6 @@ async def health():
         return {"status": "ok", "db_error": str(e)}
 
 
-
 @app.get("/connections")
 async def list_connections(
     status: Optional[str] = Query(None),
@@ -81,161 +85,114 @@ async def list_connections(
     return await asyncio.to_thread(db.get_connections, status, limit)
 
 
-@app.post("/run")
-async def trigger_run(dry_run: bool = Query(False)):
-    """Trigger a pipeline run and return the result."""
+# ---------------------------------------------------------------------------
+# Outreach pipeline jobs (cron-triggered)
+# ---------------------------------------------------------------------------
+
+@app.post("/jobs/detect-new-connections")
+async def detect_new_connections_job():
+    """Cron-triggered. Launches PB connections export agent."""
     try:
-        result = await run_pipeline(dry_run=dry_run)
-        return {"status": "completed", "dry_run": dry_run, **result}
+        result = await asyncio.to_thread(launch_detection)
+        return {"status": "launched", **result}
     except Exception as e:
+        logger.exception("[outreach:detection] Detection launch failed")
         return {"status": "error", "error": str(e)}
 
 
-@app.post("/webhook/new-connections")
-async def webhook_new_connections(request: Request, background_tasks: BackgroundTasks):
-    """Receive new connections from the Chrome extension."""
-    body = await request.json()
-    connections = body.get("connections", [])
-    if not connections:
-        return {"status": "ok", "message": "No connections provided", "processed": 0}
-
-    try:
-        result = await persist_new_connections(connections)
-        if result["connection_ids"]:
-            background_tasks.add_task(process_persisted_connections, result["connection_ids"])
-        return {
-            "status": "accepted",
-            "accepted": result["accepted"],
-            "skipped": result["skipped"],
-            "errors": result["errors"],
-        }
-    except Exception as e:
-        logger.exception("Webhook processing failed")
-        return {"status": "error", "error": str(e)}
+@app.post("/jobs/draft-outreach")
+async def draft_outreach_job():
+    """Cron-triggered. Drafts messages for all detected connections."""
+    supabase = db.get_db()
+    count = await asyncio.to_thread(draft_all_detected, supabase)
+    return {"drafted": count}
 
 
-@app.get("/known-urns")
-async def known_urns():
-    """Return all URNs the backend already knows about (for extension first-run diff)."""
-    urns = await asyncio.to_thread(db.get_all_urns)
-    return list(urns)
+@app.post("/jobs/launch-approved-sends")
+async def launch_approved_sends_job():
+    """Cron-triggered. Launches PB message sender for approved outreach rows."""
+    supabase = db.get_db()
+    result = await asyncio.to_thread(launch_approved_sends, supabase)
+    return result
 
 
-@app.post("/retry-enriched")
-async def retry_enriched(limit: int = Query(10, ge=1, le=50)):
-    """Retry connections that reached enrichment/draft but never made it to review."""
-    rows = await asyncio.to_thread(
-        db.get_connections_by_statuses,
-        ["enriched", "drafted", "slack_failed"],
-        limit,
-    )
-    if not rows:
-        return {"status": "ok", "message": "No retryable connections found", "processed": 0}
+# ---------------------------------------------------------------------------
+# Outreach actions
+# ---------------------------------------------------------------------------
 
-    slack, slack_channel, slack_error = get_slack_client()
-    processed = 0
-    errors = [slack_error] if slack_error else []
+@app.post("/outreach/{outreach_id}/retry-send")
+async def retry_outreach_send(outreach_id: str):
+    """Retry a failed send. Only allowed for send_failed rows with retry_count < 3."""
+    from app.state_machine import transition_status
 
-    for row in rows:
-        name = f"{row['first_name']} {row['last_name']}"
-        try:
-            enrichment = build_enrichment_from_row(row)
-            await process_connection(
-                row,
-                enrichment,
-                slack=slack,
-                slack_channel=slack_channel,
-                allow_retry=True,
-            )
-            processed += 1
-        except Exception as e:
-            logger.exception("Retry failed for %s", name)
-            errors.append(f"{name}: {e}")
+    row = await asyncio.to_thread(db.get_outreach, outreach_id)
+    if not row:
+        return {"status": "error", "error": "Outreach not found"}
+    if row["status"] != "send_failed":
+        return {"status": "error", "error": f"Cannot retry — status is {row['status']}, not send_failed"}
+    if (row.get("retry_count") or 0) >= 3:
+        return {"status": "error", "error": "Max retries (3) reached"}
 
-    return {"status": "ok", "processed": processed, "errors": errors}
+    supabase = db.get_db()
+    await asyncio.to_thread(transition_status, supabase, outreach_id, "send_queued")
+    return {"status": "ok", "outreach_id": outreach_id}
 
 
-@app.get("/pending-sends")
-async def pending_sends():
-    """Chrome extension polls this to find messages it needs to send."""
-    rows = await asyncio.to_thread(db.get_connections, "pending_send", 50)
-    return [
-        {
-            "id": r["id"],
-            "linkedin_urn": r["linkedin_urn"],
-            "public_identifier": r["public_identifier"],
-            "first_name": r["first_name"],
-            "last_name": r["last_name"],
-            "draft_message": r["draft_message"],
-        }
-        for r in rows
-    ]
+# ---------------------------------------------------------------------------
+# PhantomBuster webhook
+# ---------------------------------------------------------------------------
+
+@app.post("/phantombuster/webhook")
+async def phantombuster_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receive webhook callbacks from PhantomBuster after agent runs complete."""
+    secret = request.query_params.get("secret", "")
+    if not validate_webhook_secret(secret):
+        return Response(status_code=401, content="Invalid secret")
+
+    payload = await request.json()
+    background_tasks.add_task(process_pb_webhook, payload)
+    return {"status": "accepted"}
 
 
-@app.post("/queue-direct-send")
-async def queue_direct_send(request: Request):
-    """Queue a direct message for a known LinkedIn public profile."""
-    body = await request.json()
-    public_identifier = (body.get("public_identifier") or "").strip()
-    draft_message = (body.get("draft_message") or "").strip()
-    if not public_identifier or not draft_message:
-        return {"status": "error", "error": "public_identifier and draft_message are required"}
+# ---------------------------------------------------------------------------
+# Admin endpoints (protected by ADMIN_API_KEY)
+# ---------------------------------------------------------------------------
 
-    try:
-        row = await asyncio.to_thread(
-            db.queue_direct_send,
-            {
-                "public_identifier": public_identifier,
-                "linkedin_urn": body.get("linkedin_urn"),
-                "first_name": body.get("first_name", ""),
-                "last_name": body.get("last_name", ""),
-                "headline": body.get("headline", ""),
-                "summary": body.get("summary", ""),
-                "location": body.get("location", ""),
-                "industry": body.get("industry", ""),
-                "experience": body.get("experience", []),
-                "recent_posts": body.get("recent_posts", []),
-                "draft_message": draft_message,
-            },
-        )
-        return {"status": "ok", "id": row["id"], "public_identifier": row["public_identifier"]}
-    except Exception as e:
-        logger.exception("Queue direct send failed")
-        return {"status": "error", "error": str(e)}
+@app.get("/admin/outreach/status", dependencies=[Depends(verify_admin_key)])
+async def outreach_status():
+    """Dashboard-style overview of the outreach pipeline."""
+    counts = await asyncio.to_thread(db.get_outreach_status_counts)
+    failures = await asyncio.to_thread(db.get_recent_failures, 10)
+    sent_today = await asyncio.to_thread(db.get_sent_today_count)
+    attio = await asyncio.to_thread(db.get_outreach_attio_stats)
+
+    return {
+        "counts": counts,
+        "recent_failures": failures,
+        "send_today": {"sent": sent_today, "limit": DAILY_SEND_LIMIT},
+        "attio": attio,
+    }
 
 
-@app.post("/confirm-send/{connection_id}")
-async def confirm_send(connection_id: str):
-    """Chrome extension calls this after successfully sending a LinkedIn DM."""
-    conn = await asyncio.to_thread(db.get_connection, connection_id)
-    if not conn:
-        return {"status": "error", "error": "Connection not found"}
+@app.post("/admin/attio/sync-connections", dependencies=[Depends(verify_admin_key)])
+async def sync_connections_to_attio(
+    status: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None, ge=1, le=200),
+    dry_run: bool = Query(False),
+):
+    """Sync unsynced outreach connections to Attio as People + Companies."""
+    if dry_run:
+        rows = await asyncio.to_thread(db.get_unsynced_outreach, status, limit)
+        return {"dry_run": True, "would_sync": len(rows)}
 
-    await asyncio.to_thread(db.set_status, connection_id, "sent")
+    supabase = db.get_db()
+    result = await asyncio.to_thread(sync_all_unsynced, supabase, status, limit)
+    return result
 
-    # Log to Attio (non-fatal)
-    if ATTIO_API_KEY and conn.get("attio_record_id"):
-        try:
-            await add_sent_note(conn["attio_record_id"], conn["draft_message"], ATTIO_API_KEY)
-        except Exception as e:
-            logger.warning("Attio note failed for %s: %s", connection_id, e)
 
-    # Update Slack message
-    if conn.get("slack_message_ts"):
-        try:
-            slack = WebClient(token=SLACK_BOT_TOKEN)
-            await asyncio.to_thread(
-                slack.chat_update,
-                channel=SLACK_CHANNEL,
-                ts=conn["slack_message_ts"],
-                text=f"Sent to {conn['first_name']} {conn['last_name']}",
-                blocks=[],
-            )
-        except Exception as e:
-            logger.warning("Slack update failed for %s: %s", connection_id, e)
-
-    return {"status": "ok", "connection_id": connection_id}
-
+# ---------------------------------------------------------------------------
+# Slack interactivity
+# ---------------------------------------------------------------------------
 
 @app.post("/slack/events")
 async def slack_events(request: Request):
@@ -266,35 +223,41 @@ async def slack_events(request: Request):
         payload = json.loads(payload_str)
 
         payload_type = payload.get("type")
-        slack = WebClient(token=SLACK_BOT_TOKEN)
 
         if payload_type == "block_actions":
             for action in payload.get("actions", []):
                 action_id = action["action_id"]
-                connection_id = action["value"]
+                outreach_id = action["value"]
 
-                if action_id == "approve_message":
+                if action_id == "outreach_approve":
+                    logger.info("[outreach:slack] Approve action for %s", outreach_id)
+                    supabase_client = db.get_db()
                     asyncio.create_task(
-                        asyncio.to_thread(process_approve_action, connection_id)
+                        asyncio.to_thread(handle_outreach_approve, supabase_client, outreach_id)
                     )
 
-                elif action_id == "skip_message":
-                    asyncio.create_task(
-                        asyncio.to_thread(handle_skip, connection_id, slack, SLACK_CHANNEL)
-                    )
-
-                elif action_id == "edit_message":
+                elif action_id == "outreach_edit":
+                    logger.info("[outreach:slack] Edit action for %s", outreach_id)
                     trigger_id = payload["trigger_id"]
+                    supabase_client = db.get_db()
                     asyncio.create_task(
-                        asyncio.to_thread(handle_edit, connection_id, trigger_id, slack)
+                        asyncio.to_thread(handle_outreach_edit, supabase_client, outreach_id, trigger_id)
+                    )
+
+                elif action_id == "outreach_reject":
+                    logger.info("[outreach:slack] Reject action for %s", outreach_id)
+                    supabase_client = db.get_db()
+                    asyncio.create_task(
+                        asyncio.to_thread(handle_outreach_reject, supabase_client, outreach_id)
                     )
 
         elif payload_type == "view_submission":
             view = payload["view"]
-            if view.get("callback_id") == "edit_draft_modal":
-                connection_id = view["private_metadata"]
-                new_draft = view["state"]["values"]["draft_block"]["draft_input"]["value"]
-                await asyncio.to_thread(handle_edit_submit, connection_id, new_draft, slack, SLACK_CHANNEL)
+            if view.get("callback_id") == "outreach_edit_modal":
+                outreach_id = view["private_metadata"]
+                edited_text = view["state"]["values"]["outreach_draft_block"]["outreach_draft_input"]["value"]
+                supabase_client = db.get_db()
+                await asyncio.to_thread(handle_outreach_edit_submit, supabase_client, outreach_id, edited_text)
 
         return Response(status_code=200)
     except Exception:

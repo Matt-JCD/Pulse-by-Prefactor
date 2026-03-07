@@ -163,6 +163,174 @@ def set_error(connection_id: str, status: str, message: str):
     get_db().table(TABLE).update({"status": status, "last_error": last_error}).eq("id", connection_id).execute()
 
 
+# ---------------------------------------------------------------------------
+# linkedin_outreach table
+# ---------------------------------------------------------------------------
+
+OUTREACH_TABLE = "linkedin_outreach"
+
+
+def upsert_outreach_connection(data: dict) -> dict:
+    """Insert new outreach row or return existing (ignore duplicates by profile URL)."""
+    resp = (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .upsert(data, on_conflict="linkedin_profile_url", ignore_duplicates=True)
+        .execute()
+    )
+    if resp.data:
+        return resp.data[0]
+    # Already existed — fetch it
+    existing = (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .select("*")
+        .eq("linkedin_profile_url", data["linkedin_profile_url"])
+        .single()
+        .execute()
+    )
+    return existing.data
+
+
+def get_outreach(outreach_id: str) -> Optional[dict]:
+    """Fetch a single outreach row by ID."""
+    resp = (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .select("*")
+        .eq("id", outreach_id)
+        .single()
+        .execute()
+    )
+    return resp.data
+
+
+def get_outreach_by_container_id(container_id: str) -> Optional[dict]:
+    """Find an outreach row by its pb_send_container_id."""
+    resp = (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .select("*")
+        .eq("pb_send_container_id", container_id)
+        .limit(1)
+        .execute()
+    )
+    if resp.data:
+        return resp.data[0]
+    return None
+
+
+def get_outreach_by_status(status: str, limit: int = 100) -> list[dict]:
+    """Fetch outreach rows by status, ordered by first_seen_at."""
+    return (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .select("*")
+        .eq("status", status)
+        .order("first_seen_at", desc=False)
+        .limit(limit)
+        .execute()
+    ).data
+
+
+def get_approved_outreach(limit: int = 50) -> list[dict]:
+    """Fetch approved outreach rows, oldest first (FIFO)."""
+    return (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .select("*")
+        .eq("status", "approved")
+        .order("updated_at", desc=False)
+        .limit(limit)
+        .execute()
+    ).data
+
+
+def get_sent_today_count() -> int:
+    """Count outreach rows with status 'sent' whose sent_at is today (UTC)."""
+    from datetime import datetime, timezone
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    resp = (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .select("id", count="exact")
+        .eq("status", "sent")
+        .gte("sent_at", f"{today}T00:00:00Z")
+        .execute()
+    )
+    return resp.count or 0
+
+
+def get_unsynced_outreach(
+    status_filter: str | None = None, limit: int | None = None
+) -> list[dict]:
+    """Fetch outreach rows where attio_synced_at IS NULL."""
+    q = (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .select("*")
+        .is_("attio_synced_at", "null")
+        .order("updated_at", desc=False)
+    )
+    if status_filter:
+        q = q.eq("status", status_filter)
+    if limit:
+        q = q.limit(limit)
+    return q.execute().data
+
+
+def get_outreach_status_counts() -> dict[str, int]:
+    """Return count of outreach rows per status."""
+    resp = get_db().table(OUTREACH_TABLE).select("status").execute()
+    counts: dict[str, int] = {}
+    for row in resp.data:
+        s = row["status"]
+        counts[s] = counts.get(s, 0) + 1
+    return counts
+
+
+def get_recent_failures(limit: int = 10) -> list[dict]:
+    """Fetch the most recent send_failed outreach rows."""
+    return (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .select("id, full_name, last_error, retry_count, updated_at")
+        .eq("status", "send_failed")
+        .order("updated_at", desc=True)
+        .limit(limit)
+        .execute()
+    ).data
+
+
+def get_outreach_attio_stats() -> dict:
+    """Return counts for synced vs unsynced outreach rows and last sync time."""
+    all_rows = get_db().table(OUTREACH_TABLE).select("attio_synced_at").execute()
+    synced = 0
+    unsynced = 0
+    last_sync = None
+    for row in all_rows.data:
+        if row["attio_synced_at"]:
+            synced += 1
+            if last_sync is None or row["attio_synced_at"] > last_sync:
+                last_sync = row["attio_synced_at"]
+        else:
+            unsynced += 1
+    return {"synced": synced, "unsynced": unsynced, "last_sync": last_sync}
+
+
+def update_outreach(outreach_id: str, updates: dict) -> dict:
+    """Update an outreach row and return the updated row."""
+    resp = (
+        get_db()
+        .table(OUTREACH_TABLE)
+        .update(updates)
+        .eq("id", outreach_id)
+        .execute()
+    )
+    return resp.data[0]
+
+
 def queue_direct_send(payload: dict) -> dict:
     public_identifier = payload["public_identifier"].strip()
     linkedin_urn = payload.get("linkedin_urn") or f"pending:{public_identifier}"
