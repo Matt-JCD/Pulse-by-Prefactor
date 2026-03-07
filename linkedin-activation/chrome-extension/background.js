@@ -193,14 +193,19 @@ async function resolveRecipientUrn(csrf, item) {
     return item.linkedin_urn;
   }
 
-  if (!item.public_identifier) {
+  let publicIdentifier = item.public_identifier || "";
+  if (!publicIdentifier || item.linkedin_urn?.startsWith("pending:")) {
+    publicIdentifier = (await getActiveLinkedInPublicIdentifier()) || publicIdentifier;
+  }
+
+  if (!publicIdentifier) {
     throw new Error("No public identifier available to resolve recipient");
   }
 
-  const profileView = await fetchFullProfile(csrf, item.public_identifier);
+  const profileView = await fetchFullProfile(csrf, publicIdentifier);
   const resolvedUrn = extractProfileUrn(profileView);
   if (!resolvedUrn) {
-    throw new Error(`Could not resolve LinkedIn URN for ${item.public_identifier}`);
+    throw new Error(`Could not resolve LinkedIn URN for ${publicIdentifier}`);
   }
   return resolvedUrn;
 }
@@ -223,6 +228,23 @@ function isLinkedInUrl(url = "") {
   } catch {
     return false;
   }
+}
+
+function extractPublicIdentifierFromUrl(url = "") {
+  try {
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(/^\/in\/([^/?#]+)/i);
+    return match ? decodeURIComponent(match[1]) : "";
+  } catch {
+    return "";
+  }
+}
+
+async function getActiveLinkedInPublicIdentifier() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const activeTab = tabs.find((tab) => isLinkedInUrl(tab.url));
+  if (!activeTab?.url) return "";
+  return extractPublicIdentifierFromUrl(activeTab.url);
 }
 
 async function maybeRunCheckOnLinkedInOpen(url) {
